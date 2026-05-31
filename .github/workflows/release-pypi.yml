@@ -1,0 +1,59 @@
+name: Release to PyPI
+
+# Manual publisher for nld-core to PRODUCTION PyPI. Runs ONLY via workflow_dispatch — never on a
+# tag push. Run "Release to TestPyPI" and validate the install first, and complete the content
+# audit + secret scan, before running this. Uses the `pypi` environment so required reviewers can
+# be configured as an approval gate for production uploads.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_number:
+        description: "Version to publish, e.g. 0.1.1a1 (must match an existing v<version> tag)"
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Build and publish to PyPI
+    # Only runnable from main — guards against dispatching from another branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: "v${{ inputs.version_number }}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Inject version
+        run: |
+          sed -i.bak "s/^version = .*/version = \"${{ inputs.version_number }}\"/" pyproject.toml
+          rm -f pyproject.toml.bak
+
+      - name: Build package
+        run: uv build
+
+      - name: Check wheel
+        run: uv tool run twine check "dist/nld_core-${{ inputs.version_number }}-py3-none-any.whl"
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv tool run twine upload \
+            "dist/nld_core-${{ inputs.version_number }}-py3-none-any.whl"

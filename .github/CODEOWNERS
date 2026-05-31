@@ -1,0 +1,4 @@
+# Code owners for nexuslab-data/nld-core.
+#
+# CI/release workflows and repo configuration require a maintainer review.
+/.github/ @nexuslab-data/maintainers
