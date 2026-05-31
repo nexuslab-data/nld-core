@@ -73,12 +73,15 @@ nld flow execute --name my_flow
 
 ## Core concepts
 
-| Concept | What it is |
-|---|---|
-| **Flow** | A unit of data movement/transformation, defined in YAML and backed by a `DataFlowTask` (Python) or a SQL definition. Flows declare their connectors, target structure, and predecessors, and the framework orders and runs them. |
-| **Structure** | A typed schema — fields with data types, lengths, and *characterisations* (primary key, unique, functional key, …). Structures can be deployed to a warehouse and diffed against the live schema. |
-| **Connector** | The warehouse/storage abstraction (PostgreSQL, Snowflake, BigQuery, DuckDB, S3, Azure Blob, local files). The same flow definition runs against any supported connector. |
-| **Incremental** | Built-in "process only what changed" strategies (`by_key`, `by_source_tst`, `no_increment`) with persisted state and watermarks, so reruns and backfills are safe and cheap. |
+Each concept has a detailed guide in the [nld-agents](https://github.com/nexuslab-data-agents/nld-agents) marketplace (the `nld-core-usage` plugin).
+
+| Concept | What it is | Guide |
+|---|---|---|
+| **Flow** | A unit of data movement/transformation, defined in YAML and backed by a `DataFlowTask` (Python) or a SQL definition. Flows declare their connectors, target structure, and predecessors, and the framework orders and runs them. | `nld-core-usage:guide-flows` |
+| **Structure** | A typed schema — fields with data types, lengths, and *characterisations* (primary key, unique, functional key, …). Structures can be deployed to a database and diffed against the live schema. | `nld-core-usage:guide-structures` |
+| **Connector** | A storage abstraction over a **database** (which also brings a query engine), an **object storage**, or a **file storage** — PostgreSQL, Snowflake, BigQuery, DuckDB, S3, Azure Blob, or the local file system. The same flow runs against any connector. | `nld-core-usage:guide-connections` |
+| **Incremental** | Strategies (`by_key`, `by_source_tst`, `no_increment`) backed by persisted state and watermarks, so each run propagates only the data that changed at the source. | `nld-core-usage:guide-incremental` |
+| **Execution monitoring** | Every flow run and its steps are recorded — status (succeeded / warning / failed), start and end time, the requestor, and the load strategy — to a state backend you can query to see what ran and whether it succeeded. | `nld-core-usage:how-to-get-execution-info` |
 
 ## Supported connectors
 
