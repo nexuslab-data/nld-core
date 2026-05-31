@@ -1,0 +1,17 @@
+# Build artifacts produced by `uv build` / pip in this published package repo
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local virtual environment
+.venv/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
