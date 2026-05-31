@@ -1,0 +1,3 @@
+from nld.structure.deploy.structure_deploy_executor import StructureDeployExecutor
+
+StructureDeployExecuteTask = StructureDeployExecutor

@@ -1,0 +1,4 @@
+from typing import Final
+
+CONFIG_FOLDER_PATH_ENV_VAR: Final[str] = "NLD__CONFIG_FOLDER_PATH"
+ROOT_FOLDER_PATH_ENV_VAR: Final[str] = "NLD__ROOT_FOLDER_PATH"
