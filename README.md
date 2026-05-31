@@ -1,6 +1,6 @@
-# nld-core
+# NexusLabData - CORE Library
 
-**Typed, YAML-defined data flows with built-in incremental processing across major SQL warehouses — for data engineers who are tired of rewriting the same boilerplate.**
+**YAML- and Python-based data projects for extraction, ingestion, transformation, and consumption — with built-in incremental processing across multiple databases and engines.**
 
 [![PyPI version](https://img.shields.io/pypi/v/nld-core.svg)](https://pypi.org/project/nld-core/)
 [![Python versions](https://img.shields.io/pypi/pyversions/nld-core.svg)](https://pypi.org/project/nld-core/)
@@ -12,15 +12,16 @@
 
 ## What it is
 
-Moving data across PostgreSQL, Snowflake, BigQuery, and DuckDB usually means writing the same
-glue over and over: connection handling, schema definitions, incremental "only process what
-changed" logic, retry-safe writes, and dependency ordering between flows. The interesting part —
-the transformation — drowns in plumbing.
+`nld-core` (NexusLabData core) gives you a unified way to manage a data project — whether it targets
+a single database or spans multiple databases and engines. You describe your **structures** (typed
+schemas) and **flows** (how data is extracted, ingested, transformed, and consumed) in YAML, pick a
+**connector**, and the framework runs them consistently everywhere.
 
-`nld-core` (Nexus Lab Data core) is a Python framework that turns that plumbing into declarative
-configuration. You describe your **structures** (typed schemas) and **flows** (how data moves and
-transforms) in YAML, pick a **connector**, and the framework handles execution, write strategies,
-and **incremental processing** for you — consistently across every supported warehouse.
+It ships with standards that make the experience smoother across every project:
+
+- **Structure templates** and **field templates** — consistent, reusable schema definitions.
+- **Standard incremental strategies** — "process only what changed" works the same way everywhere.
+- **Execution and incremental standard logging** — monitor what ran and where each delta stopped.
 
 ## Quickstart
 
@@ -127,7 +128,6 @@ from an empty repo to working flows that follow the NLD conventions.
 ## Where to next
 
 - **Issues / feature requests**: <https://github.com/nexuslab-data/nld-core/issues>
-- **Security**: see [SECURITY.md](./SECURITY.md) for the private disclosure channel.
 
 ## License
 
