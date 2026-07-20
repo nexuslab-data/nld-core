@@ -1,12 +1,13 @@
 import os.path
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args, get_origin
 
 import yaml
 
 from nld.logging import NldLoggable
 from nld.pydantic import (
     NldBaseModel,
+    NldEntityReference,
     NldNamedBaseModel,
     NldNamespace,
     NldNamespacedBaseModelWrapper,
@@ -30,6 +31,7 @@ class EntityProvider(NldLoggable):
     def __init__(self, entity_definitions: list[EntityDefinition]) -> None:
         super().__init__()
         self._entities_loaded: bool = False
+        self._loaded_entity_definition_names: set[str] = set()
         self.entity_definitions: list[EntityDefinition] = entity_definitions
         self.entities: dict[str, dict[NldNamespace, dict[str, NldBaseModel]]] = {}
 
@@ -63,6 +65,155 @@ class EntityProvider(NldLoggable):
             if entity_def.name == entity_name
         ]
         return matching_definitions[0] if len(matching_definitions) > 0 else None
+
+    def resolve_entity_definitions(
+        self,
+        entity_names: list[str],
+    ) -> list[EntityDefinition]:
+        """Resolve entity type names to their definitions, raising on unknown names."""
+        resolved_definitions: list[EntityDefinition] = []
+        for entity_name in entity_names:
+            entity_definition = self.get_entity_definition(entity_name=entity_name)
+            if entity_definition is None:
+                raise ValueError(f"Unknown entity type: '{entity_name}'")
+            resolved_definitions.append(entity_definition)
+        return resolved_definitions
+
+    def get_required_entity_definitions(
+        self,
+        requested_entity_definitions: list[EntityDefinition],
+    ) -> list[EntityDefinition]:
+        """Resolve the full set of entity definitions needed to load the requested ones.
+
+        Walks the Pydantic model of every requested entity definition and follows
+        both embedded sub-models and ``NldEntityReference[T]`` targets. Any model
+        that is itself a registered entity definition becomes a dependency, and its
+        own dependencies are resolved transitively. This lets a caller load only the
+        entities a given list genuinely needs, e.g. requesting ``structure`` pulls in
+        ``structure_template``/``field_template``/``field`` but never
+        ``structure_model`` or ``flows``.
+
+        The result is returned in ``self.entity_definitions`` order so the existing
+        dependency-aware load ordering (base fields before templates before adapters)
+        is preserved.
+
+        Args:
+            requested_entity_definitions: Entity definitions explicitly asked for.
+
+        Returns:
+            The requested definitions plus every transitively required definition.
+        """
+        registered_models: set[type[NldBaseModel]] = {
+            entity_definition.model_type
+            for entity_definition in self.entity_definitions
+        }
+        required_models: set[type[NldBaseModel]] = set()
+        models_to_process: list[type[NldBaseModel]] = [
+            entity_definition.model_type
+            for entity_definition in requested_entity_definitions
+        ]
+        while models_to_process:
+            current_model = models_to_process.pop()
+            if current_model in required_models:
+                continue
+            required_models.add(current_model)
+            for dependency_model in self._collect_entity_model_dependencies(
+                model_type=current_model,
+                registered_models=registered_models,
+            ):
+                if dependency_model not in required_models:
+                    models_to_process.append(dependency_model)
+        return [
+            entity_definition
+            for entity_definition in self.entity_definitions
+            if entity_definition.model_type in required_models
+        ]
+
+    def _collect_entity_model_dependencies(
+        self,
+        model_type: type[NldBaseModel],
+        registered_models: set[type[NldBaseModel]],
+    ) -> set[type[NldBaseModel]]:
+        """Find the registered entity models directly required by a single model.
+
+        Registered models act as boundaries: they are recorded as dependencies but
+        not traversed, since their own dependencies are resolved when they are
+        processed in turn. Non-registered sub-models (e.g. a structure model link
+        holding the actual ``NldEntityReference``) are traversed to reach the
+        registered models hidden inside them.
+        """
+        dependencies: set[type[NldBaseModel]] = set()
+        visited_models: set[type[NldBaseModel]] = set()
+        self._walk_model_dependencies(
+            model_type=model_type,
+            registered_models=registered_models,
+            dependencies=dependencies,
+            visited_models=visited_models,
+        )
+        dependencies.discard(model_type)
+        return dependencies
+
+    def _walk_model_dependencies(
+        self,
+        model_type: type[NldBaseModel],
+        registered_models: set[type[NldBaseModel]],
+        dependencies: set[type[NldBaseModel]],
+        visited_models: set[type[NldBaseModel]],
+    ) -> None:
+        """Recursively traverse a model's fields to collect registered dependencies."""
+        if model_type in visited_models:
+            return
+        visited_models.add(model_type)
+        for field_info in model_type.model_fields.values():
+            for referenced_type in self._collect_annotation_types(
+                annotation=field_info.annotation,
+            ):
+                if not (
+                    isinstance(referenced_type, type)
+                    and issubclass(referenced_type, NldBaseModel)
+                ):
+                    continue
+                if referenced_type in registered_models:
+                    dependencies.add(referenced_type)
+                else:
+                    self._walk_model_dependencies(
+                        model_type=referenced_type,
+                        registered_models=registered_models,
+                        dependencies=dependencies,
+                        visited_models=visited_models,
+                    )
+
+    @staticmethod
+    def _collect_annotation_types(annotation: Any) -> set[type]:
+        """Extract candidate model classes from a field annotation.
+
+        Unwraps containers (``list``, ``dict``, ``Optional``/``Union``, ...) and
+        treats ``NldEntityReference[T]`` as yielding its target ``T``. Non-model
+        types such as ``str`` are returned as well and harmlessly filtered by the
+        caller.
+        """
+        collected: set[type] = set()
+        if annotation is None:
+            return collected
+        origin = get_origin(annotation)
+        arguments = get_args(annotation)
+        if origin is NldEntityReference:
+            for argument in arguments:
+                collected |= EntityProvider._collect_annotation_types(
+                    annotation=argument,
+                )
+            return collected
+        if origin is not None:
+            for argument in arguments:
+                if argument is type(None):
+                    continue
+                collected |= EntityProvider._collect_annotation_types(
+                    annotation=argument,
+                )
+            return collected
+        if isinstance(annotation, type):
+            collected.add(annotation)
+        return collected
 
     def get_entity_definitions_by_category(
         self,
@@ -627,7 +778,10 @@ class EntityProvider(NldLoggable):
             ValueError: If entity_type is not found
             RuntimeError: If entity_key is not found in the namespace
         """
-        if entity_type not in self.entities.keys():
+        if (
+            entity_type not in self.entities.keys()
+            and self.get_entity_definition(entity_name=entity_type) is None
+        ):
             raise ValueError(f"No Entity Type stored with name: {entity_type}")
 
         normalized_namespace = self._normalize_namespace(namespace=namespace)
@@ -703,7 +857,9 @@ class EntityProvider(NldLoggable):
             ValueError: If entity_type is not found
         """
         if entity_type not in self.entities:
-            raise ValueError(f"No Entity Type stored with name: {entity_type}")
+            if self.get_entity_definition(entity_name=entity_type) is None:
+                raise ValueError(f"No Entity Type stored with name: {entity_type}")
+            return []
 
         all_entities = self._get_all_entities_with_namespaces(
             entity_type=entity_type,
@@ -769,7 +925,9 @@ class EntityProvider(NldLoggable):
             ValueError: If entity_type is not found
         """
         if entity_type not in self.entities:
-            raise ValueError(f"No Entity Type stored with name: {entity_type}")
+            if self.get_entity_definition(entity_name=entity_type) is None:
+                raise ValueError(f"No Entity Type stored with name: {entity_type}")
+            return {}
 
         all_entities = self._get_all_entities_with_namespaces(
             entity_type=entity_type,
@@ -846,6 +1004,7 @@ class EntityProvider(NldLoggable):
         root_directory: str,
         fail_on_missing_folder: bool = False,
         force_reload: bool = False,
+        requested_entity_definitions: list[EntityDefinition] | None = None,
     ) -> None:
         """
         Load all entities from the root directory.
@@ -853,10 +1012,18 @@ class EntityProvider(NldLoggable):
         Recursively loads entities from each entity type's folder and subdirectories.
         Subdirectories automatically become namespaces based on their relative paths.
 
+        When ``requested_entity_definitions`` is provided, only those definitions and
+        their transitively required dependencies are loaded, so a caller that only
+        needs flows does not pay to load structure models into memory. Loading is
+        incremental: already-loaded definitions are skipped, so successive calls with
+        different requested sets accumulate without reloading or dropping entities.
+
         Args:
             root_directory: Base directory containing entity folders
             fail_on_missing_folder: Raise exception if folder doesn't exist
             force_reload: Force reload even if entities were already loaded
+            requested_entity_definitions: Restrict loading to these definitions and
+                their required dependencies; load everything when None
 
         Example:
             Given structure:
@@ -871,17 +1038,29 @@ class EntityProvider(NldLoggable):
             Loads flow1 and org1 into namespace ".",
             and flow2 into namespace "source/product1"
         """
-        if self._entities_loaded and not force_reload:
-            return
+        if force_reload:
+            self._loaded_entity_definition_names = set()
 
-        for entity_definition in self.entity_definitions:
+        entity_definitions_to_load = (
+            self.entity_definitions
+            if requested_entity_definitions is None
+            else self.get_required_entity_definitions(
+                requested_entity_definitions=requested_entity_definitions,
+            )
+        )
+        for entity_definition in entity_definitions_to_load:
+            if entity_definition.name in self._loaded_entity_definition_names:
+                continue
             self.load_from_entity_definition(
                 root_directory=root_directory,
                 entity_definition=entity_definition,
                 fail_on_missing_folder=fail_on_missing_folder,
             )
+            self._loaded_entity_definition_names.add(entity_definition.name)
 
-        self._entities_loaded = True
+        self._entities_loaded = len(self._loaded_entity_definition_names) == len(
+            self.entity_definitions
+        )
 
     def load_from_entity_definition(
         self,

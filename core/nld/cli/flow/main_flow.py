@@ -4,14 +4,14 @@ import click
 
 from nld.cli import params, requires_wrapper
 from nld.cli.flow.requires_flow import manage_flow_cli_exception
+from nld.flow.deploy.flow_change_set import FlowChangeSet
 from nld.flow.task import (
     DataFlowDependencyGraphTask,
     DataFlowExecutionTask,
     DataFlowInfoTask,
     FlowStateIncrementalComputeTask,
 )
-from nld.flow.task.data_flow_deploy_execute_task import FlowDeployExecuteTask
-from nld.flow.task.data_flow_deploy_plan_task import FlowDeployPlanTask
+from nld.flow.task.data_flow_deploy_task import FlowDeployTask
 from nld.logging import StandardNldFormatter
 from nld.task.task_utils import execute_task
 
@@ -73,6 +73,7 @@ def flow_deps(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
 @params.nld_root_folder_path
 @params_flow.flow_name_optional
 @params_flow.flow_namespace
+@params.profile_name
 @params_flow.deps_downstream
 @params_flow.deps_upstream
 @params_flow.full
@@ -90,6 +91,12 @@ def flow_execute(
     With --state-compute-only, the flow is not executed; instead the
     incremental processing state is computed and persisted, exactly like
     'nld flow state incremental compute --persist'.
+
+    --profile-name selects a single credential profile applied to every
+    connection the flow opens, including the state backend. It overrides
+    any per-connection profile pinned in the flow definition; when it is
+    omitted, each connection falls back to its definition profile and then
+    to its default profile.
     """
     from nld.task.context import NldExecutionContext
 
@@ -125,18 +132,9 @@ def flow_execute(
     return execute_task(DataFlowExecutionTask)
 
 
-@click.group(name="deploy", no_args_is_help=True)
-@click.pass_context
-def deploy(ctx: click.Context, /, **kwargs: Any) -> None:
-    """Deploy commands for flows."""
-
-
-flow.add_command(deploy)
-
-
 @requires_wrapper.nld_command(
-    group=deploy,
-    command_name="plan",
+    group=flow,
+    command_name="deploy",
     logger_formatter=StandardNldFormatter(),
     with_project=True,
 )
@@ -145,46 +143,36 @@ flow.add_command(deploy)
 @params_flow.flow_namespace
 @params_flow.deploy_downstream
 @params_flow.deploy_upstream
-@params_flow.interactive
-@params_flow.no_backfill
-def deploy_plan(ctx: Any, **kwargs: Any) -> Any:
-    """Compute a deployment plan and write a manifest."""
-    return execute_task(FlowDeployPlanTask)
+@params_flow.deploy_interactive
+@params_flow.deploy_preview
+@params_flow.deploy_output
+@params_flow.deploy_adopt
+@params_flow.deploy_allow_drift
+@params_flow.deploy_rebuild
+def flow_deploy(ctx: Any, **kwargs: Any) -> Any:
+    """Deploy the committed flow & structure definitions to the target.
 
+    The change set is always computed in memory against the live
+    target and applied immediately: deployment changes shape and
+    records state, it never executes flows. Pass --preview to print
+    the computed change set (including the structure DDL) without
+    applying anything — the command then exits with code 2 when
+    changes are pending (0 when in sync) and --output writes the
+    change set as JSON. --no-interactive skips the confirmation
+    prompt, for CI pipelines.
 
-@requires_wrapper.nld_command(
-    group=deploy,
-    command_name="execute",
-    logger_formatter=StandardNldFormatter(),
-    with_project=True,
-)
-@params.nld_root_folder_path
-@params_flow.manifest_path
-@params_flow.no_backfill
-@params_flow.with_backfill
-@params_flow.plan_only
-@params_flow.from_plan
-@params_flow.deploy_execute_interactive
-def deploy_execute(ctx: Any, **kwargs: Any) -> Any:
-    """Plan and apply a deployment in one shot, or apply manifest(s).
-
-    By default, builds a deployment plan in memory from the current entity
-    state, prompts the user to confirm (unless --no-interactive), and
-    executes it. Backfill is **suppressed by default** in this mode to
-    avoid rewriting historical data on a one-shot deploy — pass
-    --with-backfill to opt in. Pass --plan-only to write the plan as a
-    manifest YAML and exit without executing — equivalent to
-    `nld flow deploy plan`.
-
-    Pass --from-plan to opt into the manifest-based mode: when
-    --manifest-path is provided, executes that single manifest;
-    otherwise, auto-discovers and executes all pending manifests in
-    .deployments/flows/. --manifest-path implies --from-plan. In this
-    mode the backfill strategy is governed by the manifest entries;
-    pass --no-backfill to override and skip backfill globally.
-
-    --plan-only is mutually exclusive with --from-plan.
-    --with-backfill is mutually exclusive with --from-plan and
-    --no-backfill.
+    A target modified outside nld refuses the deploy by default;
+    --adopt records the live schema as a flagged baseline first,
+    --allow-drift deploys against it anyway, and --rebuild
+    recreates the in-scope structures from the assets.
     """
-    return execute_task(FlowDeployExecuteTask)
+    result = execute_task(FlowDeployTask)
+    if (
+        kwargs.get("preview")
+        and isinstance(result, FlowChangeSet)
+        and not result.is_empty()
+    ):
+        # Distinct exit code so CI drift gates can branch on
+        # "changes pending" without parsing output.
+        ctx.exit(2)
+    return result

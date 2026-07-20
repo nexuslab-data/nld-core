@@ -6,10 +6,12 @@ from nld.connector.base import BaseSqlCredential
 class BigQueryCredential(BaseSqlCredential):
     """Credential class for BigQuery connections.
 
-    Supports two authentication modes:
+    Supports three authentication modes:
     - Service account JSON key file via credentials_path.
     - Application Default Credentials (ADC) when credentials_path
       is None.
+    - Anonymous against a custom api_endpoint (a BigQuery emulator
+      for local development and testing).
     """
 
     project_id: str
@@ -17,6 +19,7 @@ class BigQueryCredential(BaseSqlCredential):
     schema_name: str | None = None
     location: str | None = None
     credentials_path: str | None = None
+    api_endpoint: str | None = None
 
     @property
     def type(self) -> str:

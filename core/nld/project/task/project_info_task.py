@@ -39,19 +39,18 @@ class ProjectInfoTask(StandardTask):
 
     def _display_project_info(self, project: Project) -> None:
         """Display basic project information."""
-        self.log_info("=" * 60)
-        self.log_info(f"Project: {project.name}")
+        title_lines = [f"Project: {project.name}"]
         if project.version:
-            self.log_info(f"Version: {project.version}")
-        self.log_info(f"Root Path: {project.root_folder_path}")
-        self.log_info(f"Entities Path: {project.entities_root_folder_path}")
-        self.log_info("=" * 60)
-        self.log_info("")
+            title_lines.append(f"Version: {project.version}")
+        title_lines.append(f"Root Path: {project.root_folder_path}")
+        title_lines.append(f"Entities Path: {project.entities_root_folder_path}")
+        self.log_section_header(*title_lines)
+        self.log_empty_line()
 
     def _display_configuration(self, project: Project) -> None:
         """Display project-level configuration declared in nld_project.yml."""
         self.log_info("Configuration:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         metadata_backend = project.metadata_backend_connector or "(not set)"
         self.log_info(f"  Metadata backend connector: {metadata_backend}")
@@ -61,8 +60,8 @@ class ProjectInfoTask(StandardTask):
         self._display_additional_incremental_types(project=project)
         self._display_variables(project=project)
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_python_additional_paths(self, project: Project) -> None:
         """Display configured python additional paths grouped by key."""
@@ -107,15 +106,15 @@ class ProjectInfoTask(StandardTask):
         namespaces = registry.get_all_namespaces()
 
         self.log_info("Namespaces:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
         self.log_info(f"  Total: {len(namespaces)}")
-        self.log_info("")
+        self.log_empty_line()
 
         for namespace in sorted(namespaces):
             self.log_info(f"  - {namespace}")
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_entity_counts(self, project: Project) -> None:
         """Display counts for all entity types in the registry, grouped by category."""
@@ -124,7 +123,7 @@ class ProjectInfoTask(StandardTask):
         self.log_info("Entity Counts:")
         if self.namespace:
             self.log_info(f"Namespace: {self.namespace}")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         grouped = registry.get_entity_definitions_grouped_by_category()
         sorted_categories = self._sort_categories(categories=list(grouped.keys()))
@@ -134,7 +133,7 @@ class ProjectInfoTask(StandardTask):
         for category in sorted_categories:
             entity_definitions = grouped[category]
 
-            self.log_info("")
+            self.log_empty_line()
             category_label = category if category else "Other Entities"
             self.log_info(f"{category_label}:")
 
@@ -156,10 +155,10 @@ class ProjectInfoTask(StandardTask):
                     count=count,
                 )
 
-        self.log_info("")
-        self.log_info("-" * 60)
+        self.log_empty_line()
+        self.log_separator_line()
         self.log_info(f"Total Entities: {total_entities}")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
     def _sort_categories(
         self,
@@ -184,4 +183,4 @@ class ProjectInfoTask(StandardTask):
 
     def _display_count(self, label: str, count: int) -> None:
         """Display formatted count for an entity type."""
-        self.log_info(f"  {label:<30} : {count:>5}")
+        self.log_info(f"  {label:<35} : {count:>5}")

@@ -324,10 +324,13 @@ class NldBaseModelDuckDBManager(NldBaseModelManager):
             query_str += f" LIMIT {literal_value(limit, dialect=DUCKDB_DIALECT)}"
 
         result = self.connector.execute_query(query_str)
-        df = result.get_output_data_as_df()
 
+        # Use the raw records helper rather than the pandas DataFrame view:
+        # pandas promotes NULLs in numeric/timestamp columns to NaN (a float),
+        # which Pydantic then rejects on ``int | None`` / ``datetime | None``
+        # fields with "'float' object cannot be interpreted as an integer".
         models = []
-        for row in df.to_dict("records"):
+        for row in result.get_result_records():
             models.append(model_class.model_validate(row))
 
         return models

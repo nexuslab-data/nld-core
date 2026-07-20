@@ -4,8 +4,11 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg2
 from nld.connector.base import (
+    ConnectorDefinition,
+    ConnectorDeployCapabilities,
     QueryExecResult,
     QueryExecResultStatus,
+    QueryExecutionException,
     QueryOutputType,
     QueryWrapper,
     SQLDataConnector,
@@ -18,11 +21,13 @@ from nld.connector.postgresql.engine.psycopg2.query_wrapper import (
     Psycopg2QueryWrapper,
 )
 from nld.connector.postgresql.engine.psycopg2.utils import Psycopg2SQLUtil
+from nld.logging.events import CSVFileWriteSuccessful
 from nld.structure import Structure
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.sqlglot import (
     identifier_list,
     literal_list,
+    literal_value,
     quote_table,
 )
 from nld.utils.sqlglot.base_ddl import BaseSqlglotDDLBuilder
@@ -35,8 +40,11 @@ if TYPE_CHECKING:
     from nld.connector.postgresql.engine.psycopg2.adapter.pydantic import (
         NldBaseModelPostgreSQLManager,
     )
-    from nld.connector.postgresql.service.structure_diff_ddl_generator import (
-        PostgreSQLStructureDiffDDLGenerator,
+    from nld.connector.postgresql.service.data_profiler import (
+        PostgreSQLDataProfiler,
+    )
+    from nld.connector.postgresql.service.structure_diff_ddl_statement_builder import (
+        PostgreSQLStructureDiffDDLStatementBuilder,
     )
     from nld.connector.postgresql.service.structure_reader import (
         PostgreSQLStructureReader,
@@ -70,13 +78,31 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
 
         return PostgreSQLSqlglotDDLBuilder()
 
-    def get_structure_diff_ddl_generator(self) -> PostgreSQLStructureDiffDDLGenerator:
+    def get_structure_diff_ddl_statement_builder(
+        self,
+    ) -> PostgreSQLStructureDiffDDLStatementBuilder:
         """Return a PostgreSQL DDL generator for structure deployment."""
-        from nld.connector.postgresql.service.structure_diff_ddl_generator import (
-            PostgreSQLStructureDiffDDLGenerator,
+        from nld.connector.postgresql.service import (
+            PostgreSQLStructureDiffDDLStatementBuilder,
         )
 
-        return PostgreSQLStructureDiffDDLGenerator()
+        return PostgreSQLStructureDiffDDLStatementBuilder()
+
+    def get_connector_definition(self) -> ConnectorDefinition:
+        """Return the static engine facts of the PostgreSQL connector."""
+        from nld.connector.postgresql.connector_definition import (
+            POSTGRESQL_CONNECTOR_DEFINITION,
+        )
+
+        return POSTGRESQL_CONNECTOR_DEFINITION
+
+    def get_deploy_capabilities(self) -> ConnectorDeployCapabilities:
+        """Return the declared PostgreSQL structure deployment capabilities."""
+        from nld.connector.postgresql.service import (
+            POSTGRESQL_DEPLOY_CAPABILITIES,
+        )
+
+        return POSTGRESQL_DEPLOY_CAPABILITIES
 
     def get_dml_builder(self) -> BaseSqlglotDMLBuilder:
         """Return a PostgreSQL-specific DML builder."""
@@ -112,6 +138,14 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         )
 
         return PostgreSQLStructureReader(self)
+
+    def get_data_profiler(self) -> PostgreSQLDataProfiler:
+        """Return a PostgreSQL data profiler for this connector."""
+        from nld.connector.postgresql.service.data_profiler import (
+            PostgreSQLDataProfiler,
+        )
+
+        return PostgreSQLDataProfiler(self)
 
     def get_active_schema(self) -> str | None:
         """Return the active schema for the connection."""
@@ -206,7 +240,7 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
                 message=message,
                 operation_type=resolved_operation_type,
                 row_count=row_count,
-                output_data=results,
+                result_data=results,
             )
             return result
         except psycopg2.Error as e:
@@ -215,6 +249,72 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             raise e
         finally:
             cur.close()
+
+    def _build_copy_to_csv_statement(
+        self,
+        query_text: str,
+        delimiter: str,
+        include_header: bool,
+    ) -> str:
+        """Build a PostgreSQL ``COPY (...) TO STDOUT`` CSV statement."""
+        inner_query = query_text.strip().rstrip(";")
+        options = [
+            "FORMAT CSV",
+            f"DELIMITER {literal_value(delimiter, POSTGRES_DIALECT)}",
+        ]
+        if include_header:
+            options.append("HEADER true")
+        return f"COPY ({inner_query}) TO STDOUT WITH ({', '.join(options)})"
+
+    def export_query_to_csv(
+        self,
+        query: str | QueryWrapper,
+        output_file_path: str,
+        delimiter: str = ",",
+        include_header: bool = True,
+        encoding: str = "utf-8",
+    ) -> int:
+        """Export a SELECT result to CSV via psycopg2 ``copy_expert``.
+
+        Streaming the result through PostgreSQL's native ``COPY`` avoids
+        materializing the whole dataset in memory before writing it.
+        """
+        self.assert_select_query(query)
+        query_text = query.query if isinstance(query, QueryWrapper) else query
+        copy_statement = self._build_copy_to_csv_statement(
+            query_text=query_text,
+            delimiter=delimiter,
+            include_header=include_header,
+        )
+        cursor = self.get_active_cursor()
+        try:
+            with open(
+                output_file_path,
+                mode="w",
+                encoding=encoding,
+                newline="",
+            ) as csv_file:
+                cursor.copy_expert(
+                    sql=copy_statement,
+                    file=csv_file,
+                )
+            row_count = cursor.rowcount
+            self.connection.commit()
+        except psycopg2.Error as error:
+            self.connection.rollback()
+            self.log_execution_error(error)
+            raise QueryExecutionException(
+                error_message=Psycopg2SQLUtil.get_standard_error_message(error),
+            ) from error
+        finally:
+            cursor.close()
+        self.log_event(
+            CSVFileWriteSuccessful(
+                object_type_name="QueryResult",
+                file_path=output_file_path,
+            ),
+        )
+        return row_count
 
     def execute_bulk_insert(
         self,
@@ -272,8 +372,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Splits table_path into schema and table name, then delegates
         to ``execute_bulk_insert_with_result``.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         return self.execute_bulk_insert_with_result(
             schema_name=schema_name,
             table_name=table_name,
@@ -367,8 +467,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
     # DDL operations
 
     def truncate_table(self, table_path: str, **kwargs: Any) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         return self.execute_query(
             query=QueryWrapper(
                 query=self.get_ddl_builder().build_truncate_table(
@@ -380,12 +480,12 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         )
 
     @staticmethod
-    def clean_table_path(table_path: str) -> str:
-        """Cleans the table path by checking specification compliance.
+    def clean_object_path(object_path: str) -> str:
+        """Cleans the object path by checking specification compliance.
 
-        Ensures the table path has both schema name and table name only.
+        Ensures the object path has both schema name and object name only.
         """
-        return table_path
+        return object_path
 
     def drop_table(
         self,
@@ -393,8 +493,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         if_exists: bool = False,
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         return self.execute_query(
             query=QueryWrapper(
                 query=self.get_ddl_builder().build_drop_table(
@@ -403,6 +503,46 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
                     if_exists=if_exists,
                 ),
                 name=table_path,
+            ),
+        )
+
+    def create_or_replace_view(
+        self,
+        view_path: str,
+        sql_query: str,
+    ) -> QueryExecResult:
+        """Create or replace a PostgreSQL view.
+
+        PostgreSQL's ``CREATE OR REPLACE VIEW`` is append-only: it can add
+        columns at the end but cannot drop, rename, reorder, or retype the
+        existing ones, raising ``42P16`` (``InvalidTableDefinition``) when the
+        new definition is column-incompatible. Other backends replace the view
+        wholesale instead, so the flow succeeds there.
+
+        To match that behaviour, drop the view if it exists and recreate it,
+        which is the standard way to replace a view on PostgreSQL regardless of
+        whether the column set changed. The drop is issued with ``CASCADE`` so
+        that views depending on this one are dropped too — PostgreSQL refuses a
+        plain ``DROP VIEW`` while dependents exist, and the dependent views are
+        expected to be rebuilt by their own VIEW flows.
+        """
+        view_path = self.clean_object_path(view_path)
+        schema_name, view_name = self._split_object_path(view_path)
+        self.execute_query(
+            query=QueryWrapper(
+                query=self.get_ddl_builder().build_drop_view(
+                    schema=schema_name,
+                    table=view_name,
+                    if_exists=True,
+                    cascade=True,
+                ),
+                name=view_path,
+            ),
+        )
+        return self.execute_query(
+            query=QueryWrapper(
+                query=f"CREATE VIEW {view_path} AS ({sql_query})",
+                name=view_path,
             ),
         )
 
@@ -433,8 +573,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             elif table_exists == "fail":
                 raise ValueError(f"Table {table_path} already exists")
 
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
 
         columns = [
             (field.name, field.data_type, False) for field in structure.fields.values()
@@ -457,17 +597,30 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         )
         return self.execute_query(query=create_sql)
 
-    def does_object_exist(self, table_path: str, **kwargs: Any) -> bool:
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+    def does_object_exist(self, object_path: str, **kwargs: Any) -> bool:
+        object_path = self.clean_object_path(object_path)
+        schema_name, table_name = self._split_object_path(object_path)
         query_exec_result = self.execute_query(
             self.get_ddl_builder().build_exists_query(
                 schema=schema_name,
                 table=table_name,
             )
         )
-        result: bool = query_exec_result.get_output_data_single_value()
+        result: bool = query_exec_result.get_result_single_value()
         return result
+
+    def get_column_names(self, object_path: str, **kwargs: Any) -> list[str]:
+        object_path = self.clean_object_path(object_path)
+        schema_name, table_name = self._split_object_path(object_path)
+        query_exec_result = self.execute_query(
+            self.get_ddl_builder().build_column_names_query(
+                schema=schema_name,
+                table=table_name,
+            )
+        )
+        return [
+            record["column_name"] for record in query_exec_result.get_result_records()
+        ]
 
     def create_index(
         self,
@@ -499,8 +652,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             ...     use_constraint=True,
             ... )
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
 
         ddl_builder = self.get_ddl_builder()
         if use_constraint and unique:
@@ -540,8 +693,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the INSERT query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         columns = list(data.keys())
         values = list(data.values())
 
@@ -582,8 +735,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the UPSERT query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         columns = list(data.keys())
         values = list(data.values())
         update_fields = [col for col in columns if col not in upsert_fields]
@@ -635,8 +788,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the DELETE query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
 
         dml_builder = self.get_dml_builder()
         conditions = [
@@ -673,8 +826,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the INSERT query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         insert_query = self.get_dml_builder().build_insert_from_select_query(
             schema_name=schema_name,
             table_name=table_name,
@@ -719,8 +872,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the UPSERT query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         upsert_query = self.get_dml_builder().build_insert_from_select_query(
             schema_name=schema_name,
             table_name=table_name,
@@ -758,8 +911,8 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         Returns:
             The result of the DELETE query execution.
         """
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
 
         table_ref = quote_table(
             schema=schema_name,
@@ -782,9 +935,9 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             ),
         )
 
-    def _split_table_path(self, table_path: str) -> tuple[str, str]:
-        """Split a qualified table path into schema and table name."""
-        if "." in table_path:
-            schema_name, table_name = table_path.split(".", maxsplit=1)
+    def _split_object_path(self, object_path: str) -> tuple[str, str]:
+        """Split a qualified object path into schema and object name."""
+        if "." in object_path:
+            schema_name, table_name = object_path.split(".", maxsplit=1)
             return schema_name, table_name
-        return self.get_active_schema() or "public", table_path
+        return self.get_active_schema() or "public", object_path

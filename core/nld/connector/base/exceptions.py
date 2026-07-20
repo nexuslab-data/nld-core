@@ -31,6 +31,18 @@ class SingleValueResultException(QueryResultException):
         super().__init__(self.message)
 
 
+class NonSelectQueryException(QueryExecutionException):
+    CODE = 30014
+    MESSAGE = "Non Select Query Exception"
+
+    def __init__(self, query_type: str) -> None:
+        self.message = (
+            f"Only read-only SELECT queries are allowed for this operation, "
+            f"but the provided query is a '{query_type}' statement."
+        )
+        super().__init__(self.message)
+
+
 class NoConnectorAvailableException(NldRuntimeException):
     CODE = 30001
     MESSAGE = "No DB Service available exception"

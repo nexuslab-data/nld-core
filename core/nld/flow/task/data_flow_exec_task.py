@@ -9,6 +9,7 @@ from nld.flow.utils import FlowExecStatus, FlowUpdateStrategies
 from nld.parameters.execution_params_def import (
     ExecutionParameterDefinition,
 )
+from nld.service import EntityTypeNames
 from nld.task.base import StandardTask
 from nld.utils import format_exception_chain
 
@@ -86,7 +87,7 @@ class DataFlowExecutionTask(StandardTask):
             upstream: Include upstream lineage flows
             with_views: When True, execute VIEW flows instead of skipping them
             planned_state_strategy: How to react to an available planned state
-                (see ``PlannedStateStrategy``); defaults to RECOMPUTE.
+                (see ``PlannedStateStrategy``); defaults to AUTO.
             **kwargs: Additional arguments (e.g., exec_uuid)
         """
         super().__init__(**kwargs)
@@ -106,7 +107,9 @@ class DataFlowExecutionTask(StandardTask):
                 "--downstream and --upstream require --name or --namespace."
             )
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+        )
 
         if downstream or upstream:
             self.flow_dict = self._resolve_lineage_flows()

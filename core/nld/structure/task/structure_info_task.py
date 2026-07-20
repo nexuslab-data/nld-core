@@ -3,9 +3,9 @@ from typing import Any, ClassVar
 from nld.parameters import (
     ExecutionParameterDefinition,
 )
+from nld.service import EntityTypeNames
 from nld.structure.field.field_data_type import FieldDataType
 from nld.task.base import StandardTask
-from nld.utils.user_display import format_aligned_table
 
 
 class StructureInfoTask(StandardTask):
@@ -43,7 +43,7 @@ class StructureInfoTask(StandardTask):
         """
         super().__init__(**kwargs)
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(entity_types=[EntityTypeNames.STRUCTURE])
 
         namespaced_structure = self.execution_context.entity_registry.get_structure(
             entity_key=name,
@@ -65,50 +65,49 @@ class StructureInfoTask(StandardTask):
 
     def _display_header(self) -> None:
         """Display structure header information."""
-        self.log_info("=" * 60)
-        self.log_info(f"Structure: {self.structure.name}")
+        title_lines = [f"Structure: {self.structure.name}"]
         if self.structure_namespace:
-            self.log_info(f"Namespace: {self.structure_namespace}")
-        self.log_info(f"Type: {self.structure.structure_type}")
+            title_lines.append(f"Namespace: {self.structure_namespace}")
+        title_lines.append(f"Type: {self.structure.structure_type}")
         if self.structure.connector_type:
-            self.log_info(f"Connector Type: {self.structure.connector_type}")
+            title_lines.append(f"Connector Type: {self.structure.connector_type}")
         if self.structure.description:
-            self.log_info(f"Description: {self.structure.description}")
-        self.log_info("=" * 60)
-        self.log_info("")
+            title_lines.append(f"Description: {self.structure.description}")
+        self.log_section_header(*title_lines)
+        self.log_empty_line()
 
     def _display_properties(self) -> None:
         """Display structure properties including template-contributed ones."""
         all_properties = self.structure.get_all_properties()
 
         self.log_info("Properties:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         if not all_properties:
             self.log_info("  No properties defined")
         else:
-            self.log_info("")
+            self.log_empty_line()
             template_property_keys = self._get_template_property_keys()
             for key, value in all_properties.items():
                 template_name = template_property_keys.get(key, "")
                 template_col = f" | Template: {template_name}" if template_name else ""
                 self.log_info(f"  {key:<28} : {value}{template_col}")
-            self.log_info("")
+            self.log_empty_line()
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_fields(self) -> None:
         """Display structure fields including template-contributed ones."""
         all_fields = self.structure.get_all_fields()
 
         self.log_info("Fields:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         if not all_fields:
             self.log_info("  No fields defined")
         else:
-            self.log_info("")
+            self.log_empty_line()
             template_field_map = self._get_template_field_map()
 
             headers = (
@@ -133,72 +132,71 @@ class StructureInfoTask(StandardTask):
                     )
                 )
 
-            for line in format_aligned_table(
+            self.log_aligned_table(
                 headers=list(headers),
                 rows=[list(row) for row in rows],
-            ):
-                self.log_info(line)
-            self.log_info("")
+            )
+            self.log_empty_line()
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_characterisations(self) -> None:
         """Display structure-level characterisations."""
         self.log_info("Characterisations:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         if not self.structure.characterisations:
             self.log_info("  No characterisations defined")
         else:
-            self.log_info("")
+            self.log_empty_line()
             for char in self.structure.characterisations:
                 linked = ", ".join(char.linked_fields) if char.linked_fields else "None"
                 self.log_info(
                     f"  {char.name:<20} | Type: {char.characterisation:<16} | "
                     f"Fields: {linked}"
                 )
-            self.log_info("")
+            self.log_empty_line()
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_tags(self) -> None:
         """Display structure tags including template-contributed ones."""
         all_tags = self.structure.get_all_tags()
 
         self.log_info("Tags:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         if not all_tags:
             self.log_info("  No tags defined")
         else:
-            self.log_info("")
+            self.log_empty_line()
             template_tags = self._get_template_tags()
             for tag in all_tags:
                 template_name = template_tags.get(tag, "")
                 suffix = f"  (from: {template_name})" if template_name else ""
                 self.log_info(f"  - {tag}{suffix}")
-            self.log_info("")
+            self.log_empty_line()
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _display_templates(self) -> None:
         """Display structure templates."""
         self.log_info("Templates:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         if not self.structure.templates:
             self.log_info("  No templates defined")
         else:
-            self.log_info("")
+            self.log_empty_line()
             for template in self.structure.templates:
                 self.log_info(f"  - {template.name}")
-            self.log_info("")
+            self.log_empty_line()
 
-        self.log_info("-" * 60)
-        self.log_info("")
+        self.log_separator_line()
+        self.log_empty_line()
 
     def _get_template_field_map(self) -> dict[str, str]:
         """Build a mapping of field name to template name.

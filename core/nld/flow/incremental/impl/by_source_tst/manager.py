@@ -17,6 +17,7 @@ from .logic import (
     BySourceTstFlowIncrementalParams,
 )
 from .state import (
+    BySourceTstPlannedProcessingDetailledState,
     BySourceTstPlannedProcessingState,
     BySourceTstProcessingState,
     BySourceTstSourceState,
@@ -44,6 +45,7 @@ class BySourceTstStateManager(
             BySourceTstSourceState,
             BySourceTstProcessingState,
             BySourceTstPlannedProcessingState,
+            BySourceTstPlannedProcessingDetailledState,
         ]
         | None = None,
         secondary_incremental_state_backend_manager: IncrementalBackendStateManager[
@@ -52,6 +54,7 @@ class BySourceTstStateManager(
             BySourceTstSourceState,
             BySourceTstProcessingState,
             BySourceTstPlannedProcessingState,
+            BySourceTstPlannedProcessingDetailledState,
         ]
         | None = None,
         parameters: dict[str, Any] | None = None,
@@ -113,8 +116,8 @@ class BySourceTstStateManager(
         A DELTA plan adds that its ``pull_from_timestamp`` still equals that
         baseline watermark, since DELTA derives its window from it.
         """
-        processing_state = planned_processing_state.processing_state
-        if processing_state.strategy in [
+        detailled_state = planned_processing_state.detailled_state
+        if detailled_state.strategy in [
             FlowLoadingStrategies.BACKFILL,
             FlowLoadingStrategies.FULL,
         ]:
@@ -128,11 +131,11 @@ class BySourceTstStateManager(
             baseline_timestamp is None
             or planned_processing_state.status_changed_at > baseline_timestamp
         )
-        if processing_state.strategy in [FlowLoadingStrategies.BACKFILL_DELTA]:
+        if detailled_state.strategy in [FlowLoadingStrategies.BACKFILL_DELTA]:
             return plan_changed_after_last_run
-        if processing_state.strategy in [FlowLoadingStrategies.DELTA]:
+        if detailled_state.strategy in [FlowLoadingStrategies.DELTA]:
             return plan_changed_after_last_run and (
-                processing_state.pull_from_timestamp == baseline_timestamp
+                detailled_state.pull_from_timestamp == baseline_timestamp
             )
         return True
 

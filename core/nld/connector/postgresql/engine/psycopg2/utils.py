@@ -1,6 +1,6 @@
 from typing import Any, Final
 
-from nld.connector.postgresql.postgresql_data_type import (
+from nld.connector.postgresql.connector_definition import (
     PostgreSQLDataTypes,
 )
 from nld.structure import Field, Structure

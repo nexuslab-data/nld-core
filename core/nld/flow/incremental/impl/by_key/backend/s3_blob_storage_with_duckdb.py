@@ -171,19 +171,28 @@ class S3ByKeyDuckDBStateBackendManager(S3ByKeyBackendStateManagerBase):
         self,
         processing_flow_state: ByKeyProcessingState,
     ) -> None:
-        """Write processed state to parquet file."""
+        """Write the run's processing state as one parquet under ``state/<ts>/``."""
+        self._write_processing_state_single_file(
+            processing_flow_state=processing_flow_state,
+            serialize=self._serialize_processing_state,
+        )
+
+    def _serialize_processing_state(
+        self,
+        processing_flow_state: ByKeyProcessingState,
+        local_path: Path,
+    ) -> None:
+        """Serialise the processing state to a parquet file."""
         self._write_by_key_processing_state_to_parquet(
             state=processing_flow_state,
-            local_path=self.local_processed_state_file_path,
-        )
-        self._upload_file_to_state_in_process_folder(
-            self.local_processed_state_file_path
+            local_path=local_path,
         )
 
     def write_post_processing_state(
         self, post_processing_flow_state: ByKeyState
     ) -> None:
         """Write post-processing state using DuckDB to write Parquet."""
+        self._create_local_state_dir()
         self._write_parquet_with_duckdb(post_processing_flow_state)
         self._upload_file_to_state_at_root_folder(
             [self.local_post_processing_state_file_path]

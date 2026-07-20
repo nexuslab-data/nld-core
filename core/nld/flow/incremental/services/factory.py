@@ -67,7 +67,9 @@ class IncrementalStateManagerFactory(NldMixIn):
         )
         self.incremental_backend_state_managers: dict[
             str,
-            dict[str, type[IncrementalBackendStateManager[Any, Any, Any, Any, Any]]],
+            dict[
+                str, type[IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any]]
+            ],
         ] = {}
         self.incremental_state_managers: dict[
             str, type[IncrementalStateManager[Any, Any, Any, Any, Any]]
@@ -82,7 +84,7 @@ class IncrementalStateManagerFactory(NldMixIn):
         incremental_type: str,
         backend_type: str,
         engine: str | None = None,
-    ) -> type[IncrementalBackendStateManager[Any, Any, Any, Any, Any]]:
+    ) -> type[IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any]]:
         """Dynamically load the IncrementalBackendStateManager class.
 
         Raises ImplementationException when either the incremental type or the
@@ -109,7 +111,7 @@ class IncrementalStateManagerFactory(NldMixIn):
             raise
 
         manager_class = cast(
-            type[IncrementalBackendStateManager[Any, Any, Any, Any, Any]],
+            type[IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any]],
             find_subclass_in_module(
                 module=backend_module,
                 base_class=IncrementalBackendStateManager,
@@ -129,7 +131,7 @@ class IncrementalStateManagerFactory(NldMixIn):
         incremental_type: str,
         backend_type: str,
         engine: str | None = None,
-    ) -> type[IncrementalBackendStateManager[Any, Any, Any, Any, Any]]:
+    ) -> type[IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any]]:
         """
         Get the IncrementalBackendStateManager class for the specified
         incremental type, backend, and engine.
@@ -177,7 +179,7 @@ class IncrementalStateManagerFactory(NldMixIn):
         data_flow_definition: DataFlowDefinition | None = None,
         engine: str | None = None,
         **kwargs: Any,
-    ) -> IncrementalBackendStateManager[Any, Any, Any, Any, Any]:
+    ) -> IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any]:
         """Create an IncrementalBackendStateManager for one state-backend side.
 
         Engine resolution precedence (highest first):

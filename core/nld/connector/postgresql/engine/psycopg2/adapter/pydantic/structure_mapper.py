@@ -4,7 +4,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, cast, get_args, get_origin
 
-from nld.connector.postgresql.postgresql_data_type import (
+from nld.connector.postgresql.connector_definition import (
     PostgreSQLDataTypes,
 )
 from nld.pydantic import BasePydanticStructureMapper, NldBaseModel

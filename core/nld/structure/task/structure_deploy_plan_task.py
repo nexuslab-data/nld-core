@@ -1,3 +1,0 @@
-from nld.structure.deploy.structure_deploy_planner import StructureDeployPlanner
-
-StructureDeployPlanTask = StructureDeployPlanner

@@ -1,5 +1,10 @@
 from nld.connector.base import ConnectorPlugin
 
+from .connector_definition import (
+    POSTGRESQL_CONNECTOR_DEFINITION,
+    PostgreSQLConnectorDefinition,
+    PostgreSQLDataTypes,
+)
 from .engine.psycopg2.connection import (
     Psycopg2SQLConnectionWrapper,
 )
@@ -12,14 +17,12 @@ from .engine.psycopg2.query_wrapper import (
 from .postgresql_credential import (
     PostgreSQLCredential,
 )
-from .postgresql_data_type import (
-    PostgreSQLDataTypes,
-)
 from .postgresql_structure import (
     PostgreSQLStructure,
 )
 from .service import (
-    PostgreSQLStructureDiffDDLGenerator,
+    POSTGRESQL_DEPLOY_CAPABILITIES,
+    PostgreSQLStructureDiffDDLStatementBuilder,
     PostgreSQLStructureReader,
 )
 
@@ -31,10 +34,13 @@ Plugin = ConnectorPlugin(
 )
 
 __all__ = [
+    "POSTGRESQL_CONNECTOR_DEFINITION",
+    "POSTGRESQL_DEPLOY_CAPABILITIES",
+    "PostgreSQLConnectorDefinition",
     "PostgreSQLCredential",
     "PostgreSQLDataTypes",
     "PostgreSQLStructure",
-    "PostgreSQLStructureDiffDDLGenerator",
+    "PostgreSQLStructureDiffDDLStatementBuilder",
     "PostgreSQLStructureReader",
     "Psycopg2QueryWrapper",
     "Psycopg2SQLConnectionWrapper",

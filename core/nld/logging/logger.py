@@ -7,6 +7,7 @@ from .base import (
     StandardDebugEvent,
     StandardErrorEvent,
     StandardInfoEvent,
+    StandardTraceEvent,
     StandardWarningEvent,
 )
 
@@ -57,6 +58,10 @@ def log_info_default(message: str) -> None:
     _emit_event(_get_default_logger(), StandardInfoEvent(msg=message))
 
 
+def log_trace_default(message: str) -> None:
+    _emit_event(_get_default_logger(), StandardTraceEvent(msg=message))
+
+
 def log_debug_default(message: str) -> None:
     _emit_event(_get_default_logger(), StandardDebugEvent(msg=message))
 
@@ -95,6 +100,9 @@ class NldLoggable:
 
     def log_event(self, event: BaseEvent) -> None:
         log_event(event, self.logger)
+
+    def log_trace(self, message: str) -> None:
+        self.logger.log(EventLevel.TRACE, message)
 
     def log_debug(self, message: str) -> None:
         self.logger.log(EventLevel.DEBUG, message)
@@ -136,6 +144,7 @@ class LoggerManager:
         if formatter is None:
             formatter = _DEFAULT_FORMATTER
         logging.setLoggerClass(NldLogger)
+        logging.addLevelName(EventLevel.TRACE, "TRACE")
         logging.addLevelName(EventLevel.TEST, "TEST")
 
         root = logging.getLogger()

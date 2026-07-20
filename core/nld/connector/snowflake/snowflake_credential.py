@@ -8,6 +8,7 @@ from nld.connector.base import BaseSqlCredential
 class SnowflakeAuthenticator(StrEnum):
     SNOWFLAKE = "snowflake"
     SNOWFLAKE_JWT = "snowflake_jwt"
+    PROGRAMMATIC_ACCESS_TOKEN = "programmatic_access_token"
 
 
 class SnowflakeCredential(BaseSqlCredential):
@@ -17,6 +18,7 @@ class SnowflakeCredential(BaseSqlCredential):
     password: str | None = None
     private_key_path: str | None = None
     private_key_passphrase: str | None = None
+    token: str | None = None
     role: str | None = None
     warehouse: str | None = None
     database_name: str | None = None
@@ -39,5 +41,12 @@ class SnowflakeCredential(BaseSqlCredential):
         ):
             raise ValueError(
                 "Private key path is required for authenticator='snowflake_jwt'"
+            )
+        if (
+            self.authenticator == SnowflakeAuthenticator.PROGRAMMATIC_ACCESS_TOKEN.value
+            and not self.token
+        ):
+            raise ValueError(
+                "Token is required for authenticator='programmatic_access_token'"
             )
         return self

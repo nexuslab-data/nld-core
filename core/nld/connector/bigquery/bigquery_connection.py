@@ -1,5 +1,7 @@
 from typing import Self
 
+from google.api_core.client_options import ClientOptions
+from google.auth.credentials import AnonymousCredentials
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -50,7 +52,19 @@ class BigQueryConnectionWrapper(ConnectionWrapper[BigQueryCredential, bigquery.C
             self.log_info("BigQuery connection opening")
             self.log_debug(f"Project: {self.credentials.project_id}")
 
-            if self.credentials.credentials_path is not None:
+            if self.credentials.api_endpoint is not None:
+                self.log_info(
+                    f"Using anonymous emulator endpoint {self.credentials.api_endpoint}"
+                )
+                self.connection = bigquery.Client(
+                    project=self.credentials.project_id,
+                    credentials=AnonymousCredentials(),  # type: ignore[no-untyped-call]
+                    client_options=ClientOptions(
+                        api_endpoint=self.credentials.api_endpoint,
+                    ),
+                    location=self.credentials.location,
+                )
+            elif self.credentials.credentials_path is not None:
                 self.log_info("Using service account key file authentication")
                 gcp_credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call,unused-ignore]
                     self.credentials.credentials_path,

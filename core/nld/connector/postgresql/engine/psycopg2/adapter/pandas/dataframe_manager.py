@@ -96,6 +96,6 @@ class PandasPostgreSQLManager:
             params={"schema_name": schema_name, "table_name": table_name},
         )
         result = self.connector.execute_query(query=query_wrapper)
-        df = result.get_output_data_as_df()
+        df = result.get_result_df()
         logging.info(f"Fetched {len(df)} rows from table {schema_name}.{table_name}")
         return df

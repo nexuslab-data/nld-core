@@ -7,14 +7,18 @@ from google.cloud import bigquery
 from sqlglot import exp
 
 from nld.connector.base import (
+    ConnectorDefinition,
+    ConnectorDeployCapabilities,
     QueryExecResult,
     QueryExecResultStatus,
+    QueryExecutionException,
     QueryOutputType,
     QueryWrapper,
     SQLDataConnector,
 )
 from nld.connector.bigquery.bigquery_connection import BigQueryConnectionWrapper
 from nld.connector.bigquery.query_wrapper import BigQueryQueryWrapper
+from nld.logging.events import CSVFileWriteSuccessful
 from nld.structure import Structure
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.sqlglot import (
@@ -29,26 +33,13 @@ from nld.utils.sqlglot.base_dml import BaseSqlglotDMLBuilder
 BIGQUERY_DIALECT = "bigquery"
 
 
-def _field_type_expression(field: Any) -> str:
-    """Render a field's declared type with length / precision suffix.
-
-    Shared between ``BigQueryConnector.create_table`` and the diff
-    generator so ``STRING(n)`` / ``NUMERIC(p, s)`` schemas are
-    emitted consistently in both the initial CREATE TABLE and in
-    subsequent ALTER statements.
-    """
-    data_type: str = field.data_type.upper()
-    if field.length > 0 and field.precision > 0:
-        return f"{data_type}({field.length}, {field.precision})"
-    if field.length > 0:
-        return f"{data_type}({field.length})"
-    return data_type
-
-
 if TYPE_CHECKING:
     from nld.connector.bigquery.pydantic import NldBaseModelBigQueryManager
-    from nld.connector.bigquery.service.structure_diff_ddl_generator import (
-        BigQueryStructureDiffDDLGenerator,
+    from nld.connector.bigquery.service.data_profiler import (
+        BigQueryDataProfiler,
+    )
+    from nld.connector.bigquery.service.structure_diff_ddl_statement_builder import (
+        BigQueryStructureDiffDDLStatementBuilder,
     )
     from nld.connector.bigquery.service.structure_reader import (
         BigQueryStructureReader,
@@ -82,13 +73,31 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
 
         return BigQuerySqlglotDMLBuilder()
 
-    def get_structure_diff_ddl_generator(self) -> BigQueryStructureDiffDDLGenerator:
+    def get_structure_diff_ddl_statement_builder(
+        self,
+    ) -> BigQueryStructureDiffDDLStatementBuilder:
         """Return a BigQuery DDL generator for structure deployment."""
-        from nld.connector.bigquery.service.structure_diff_ddl_generator import (
-            BigQueryStructureDiffDDLGenerator,
+        from nld.connector.bigquery.service import (
+            BigQueryStructureDiffDDLStatementBuilder,
         )
 
-        return BigQueryStructureDiffDDLGenerator()
+        return BigQueryStructureDiffDDLStatementBuilder()
+
+    def get_connector_definition(self) -> ConnectorDefinition:
+        """Return the static engine facts of the BigQuery connector."""
+        from nld.connector.bigquery.connector_definition import (
+            BIGQUERY_CONNECTOR_DEFINITION,
+        )
+
+        return BIGQUERY_CONNECTOR_DEFINITION
+
+    def get_deploy_capabilities(self) -> ConnectorDeployCapabilities:
+        """Return the declared BigQuery structure deployment capabilities."""
+        from nld.connector.bigquery.service import (
+            BIGQUERY_DEPLOY_CAPABILITIES,
+        )
+
+        return BIGQUERY_DEPLOY_CAPABILITIES
 
     @property
     def client(self) -> bigquery.Client:
@@ -103,6 +112,18 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
     def get_active_project(self) -> str:
         """Return the active GCP project ID."""
         return self.connection_wrapper.get_active_project()
+
+    def _query_retry_kwargs(self) -> dict[str, Any]:
+        """Query retry policy adapted to the endpoint.
+
+        Emulators classify every failure as ``jobInternalError``, which
+        the client's default job retry treats as transient and retries
+        for up to ten minutes — a plain SQL error would block instead
+        of failing fast. Against an emulator endpoint, disable it.
+        """
+        if self.connection_wrapper.credentials.api_endpoint is not None:
+            return {"job_retry": None}
+        return {}
 
     def get_active_dataset(self) -> str | None:
         """Return the active default dataset ID."""
@@ -125,6 +146,14 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
 
         return BigQueryStructureReader(self)
 
+    def get_data_profiler(self) -> BigQueryDataProfiler:
+        """Return a BigQuery data profiler for this connector."""
+        from nld.connector.bigquery.service.data_profiler import (
+            BigQueryDataProfiler,
+        )
+
+        return BigQueryDataProfiler(self)
+
     def get_model_manager(self) -> NldBaseModelBigQueryManager:
         """Return a BigQuery pydantic model manager."""
         from nld.connector.bigquery.pydantic import NldBaseModelBigQueryManager
@@ -136,9 +165,9 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         self.log_error(f"BigQuery execution error: {error}")
 
     @staticmethod
-    def clean_table_path(table_path: str) -> str:
-        """Cleans the table path by checking specification compliance."""
-        return table_path
+    def clean_object_path(object_path: str) -> str:
+        """Cleans the object path by checking specification compliance."""
+        return object_path
 
     @staticmethod
     def _quote_ident(name: str) -> str:
@@ -192,6 +221,7 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         try:
             query_job = self.client.query(
                 query_wrapper.get_interpreted_query(),
+                **self._query_retry_kwargs(),
             )
             result_iterator = query_job.result()
 
@@ -233,7 +263,7 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
                 message=message,
                 operation_type=resolved_operation_type,
                 row_count=row_count,
-                output_data=results,
+                result_data=results,
             )
         except (
             google_exceptions.GoogleAPICallError,
@@ -255,8 +285,48 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
                 start_tst=start_tst,
                 end_tst=get_current_datetime(),
                 operation_type=resolved_operation_type,
-                output_data=[str(ex)],
+                result_data=[str(ex)],
             )
+
+    def export_query_to_csv(
+        self,
+        query: str | QueryWrapper,
+        output_file_path: str,
+        delimiter: str = ",",
+        include_header: bool = True,
+        encoding: str = "utf-8",
+    ) -> int:
+        """Export a SELECT result to CSV via the BigQuery client.
+
+        The query result is materialized with the client's native
+        ``to_dataframe`` before being written to the target CSV file.
+        """
+        self.assert_select_query(query)
+        query_text = query.query if isinstance(query, QueryWrapper) else query
+        try:
+            query_job = self.client.query(query_text)
+            data_frame = query_job.result().to_dataframe()
+        except (
+            google_exceptions.GoogleAPICallError,
+            google_exceptions.RetryError,
+            ValueError,
+        ) as error:
+            self.log_execution_error(error)
+            raise QueryExecutionException(error_message=str(error)) from error
+        data_frame.to_csv(
+            output_file_path,
+            sep=delimiter,
+            header=include_header,
+            index=False,
+            encoding=encoding,
+        )
+        self.log_event(
+            CSVFileWriteSuccessful(
+                object_type_name="QueryResult",
+                file_path=output_file_path,
+            ),
+        )
+        return len(data_frame)
 
     def _build_structure_from_schema(
         self,
@@ -305,8 +375,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         to the partition-modification quota), whereas DELETE is billed
         DML that scans and rewrites every row.
         """
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         table_ref = quote_table(
             schema=dataset,
             table=table_name,
@@ -325,8 +395,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         if_exists: bool = False,
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         return self.execute_query(
             query=QueryWrapper(
                 query=self.get_ddl_builder().build_drop_table(
@@ -365,19 +435,24 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
             elif table_exists == "fail":
                 raise ValueError(f"Table {table_path} already exists")
 
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
 
         # Honor the MANDATORY characterisation from the structure
         # definition so the generated DDL sets NOT NULL consistently
-        # with what ``BigQueryStructureDiffDDLGenerator`` would emit,
+        # with what ``BigQueryStructureDiffDDLStatementBuilder`` would emit,
         # and preserve length / precision on the type so declared
         # ``STRING(n)`` / ``NUMERIC(p, s)`` schemas are created
         # faithfully instead of being flattened to the base type.
+        ddl_builder = self.get_ddl_builder()
         columns = [
             (
                 field.name,
-                _field_type_expression(field),
+                ddl_builder.build_type_expression(
+                    data_type=field.data_type,
+                    length=field.length,
+                    precision=field.precision,
+                ),
                 field.is_mandatory(),
             )
             for field in structure.fields.values()
@@ -406,17 +481,41 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         )
         return self.execute_query(query=create_sql)
 
-    def does_object_exist(self, table_path: str, **kwargs: Any) -> bool:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
-        query_exec_result = self.execute_query(
-            self.get_ddl_builder().build_exists_query(
-                schema=dataset,
-                table=table_name,
-            )
-        )
-        result: bool = query_exec_result.get_output_data_single_value()
-        return result
+    def does_object_exist(self, object_path: str, **kwargs: Any) -> bool:
+        """Check table existence through the tables API.
+
+        The REST metadata API only needs ``bigquery.tables.get`` and
+        works on any endpoint — ``INFORMATION_SCHEMA.TABLES`` is not
+        even query-able while a dataset is still empty.
+        """
+        object_path = self.clean_object_path(object_path)
+        dataset, table_name = self._split_object_path(object_path)
+        try:
+            self.client.get_table(f"{dataset}.{table_name}")
+        except google_exceptions.NotFound:
+            return False
+        return True
+
+    def does_schema_exist(self, schema: str, **kwargs: Any) -> bool:
+        """Check dataset existence through the datasets API.
+
+        The REST metadata API only needs ``bigquery.datasets.get`` and
+        works on any endpoint (including emulators), unlike the
+        ``__TABLES__`` metaview which requires at least one query-able
+        table path.
+        """
+        try:
+            self.client.get_dataset(schema)
+        except google_exceptions.NotFound:
+            return False
+        return True
+
+    def get_column_names(self, object_path: str, **kwargs: Any) -> list[str]:
+        """Read column names through the tables API, in schema order."""
+        object_path = self.clean_object_path(object_path)
+        dataset, table_name = self._split_object_path(object_path)
+        table = self.client.get_table(f"{dataset}.{table_name}")
+        return [field.name for field in table.schema]
 
     # DML operations
 
@@ -426,8 +525,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         data: dict[str, Any],
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         columns = list(data.keys())
         values = list(data.values())
 
@@ -469,8 +568,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         from the non-None values in ``data`` and fall back to
         ``STRING`` for all-None columns.
         """
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         columns = list(data.keys())
         values = list(data.values())
         update_fields = [col for col in columns if col not in upsert_fields]
@@ -537,8 +636,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         where_conditions: dict[str, Any],
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
 
         dml_builder = self.get_dml_builder()
         conditions = [
@@ -565,8 +664,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         column_list: list[str],
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         table_ref = quote_table(
             schema=dataset,
             table=table_name,
@@ -596,8 +695,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         **kwargs: Any,
     ) -> QueryExecResult:
         """Upsert rows from a SELECT query using MERGE."""
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         excluded_set = set(exclude_from_update or [])
         overrides = expression_overrides or {}
         update_fields = [
@@ -682,8 +781,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         key_columns: list[str],
         **kwargs: Any,
     ) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
 
         table_ref = quote_table(
             schema=dataset,
@@ -712,8 +811,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
             ),
         )
 
-    def _split_table_path(self, table_path: str) -> tuple[str, str]:
-        """Split a qualified table path into dataset and table name.
+    def _split_object_path(self, object_path: str) -> tuple[str, str]:
+        """Split a qualified object path into dataset and object name.
 
         Supports the canonical NLD forms:
         - ``table`` — the active dataset is used.
@@ -728,16 +827,16 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         should pass ``dataset.table`` and let the client apply the
         project.
         """
-        parts = table_path.split(".")
+        parts = object_path.split(".")
         if len(parts) >= 3:
             raise ValueError(
                 f"Fully-qualified 3-part table paths are not supported "
                 f"by the BigQuery connector; pass ``dataset.table`` and "
-                f"let the credentials carry the project. Got: {table_path!r}"
+                f"let the credentials carry the project. Got: {object_path!r}"
             )
         if len(parts) == 2:
             return parts[0], parts[1]
-        return self.get_active_dataset() or "default", table_path
+        return self.get_active_dataset() or "default", object_path
 
     @staticmethod
     def _bq_literal(value: Any, bq_type: str | None = None) -> str:
@@ -821,8 +920,8 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         value seen per column across all rows, falling back to
         ``STRING`` for all-None columns.
         """
-        table_path = self.clean_table_path(table_path)
-        dataset, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        dataset, table_name = self._split_object_path(table_path)
         table_ref = quote_table(
             schema=dataset,
             table=table_name,

@@ -18,6 +18,7 @@ from nld.flow.utils import FlowLoadingStrategies
 from nld.utils.datetime_util import ensure_utc_datetime, parse_datetime_string
 
 from .state import (
+    BySourceTstPlannedProcessingDetailledState,
     BySourceTstPlannedProcessingState,
     BySourceTstProcessingState,
     BySourceTstSourceState,
@@ -52,6 +53,7 @@ BY_SOURCE_TST_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     source_state_class=BySourceTstSourceState,
     processing_state_class=BySourceTstProcessingState,
     planned_processing_state_class=BySourceTstPlannedProcessingState,
+    planned_processing_detailled_state_class=BySourceTstPlannedProcessingDetailledState,
     auto_processing_state_transition=True,
     partial_state_persistence=False,
     tracks_logical_deletion=False,

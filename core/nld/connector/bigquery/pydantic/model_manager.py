@@ -245,7 +245,14 @@ class NldBaseModelBigQueryManager(NldBaseModelManager):
         exclude_fields: set[str] | None = None,
         track_timestamps: bool = False,
     ) -> None:
-        """Upsert a Pydantic model using BigQuery MERGE INTO syntax.
+        """Upsert a Pydantic model as an atomic UPDATE + insert-if-absent.
+
+        Emitted as a single multi-statement transaction script rather
+        than a MERGE: a single-row MERGE needs a subquery source, which
+        some BigQuery backends (notably emulators) restrict to plain
+        table references, while the script form is portable and keeps
+        the same semantics — the matched row is always rewritten and
+        ``ts_inserted_at`` is preserved on update.
 
         Note on semantics — unlike ``BigQueryConnector.upsert_from_query``
         (which emits a ``WHEN MATCHED AND (change predicate)`` to skip
@@ -299,23 +306,17 @@ class NldBaseModelBigQueryManager(NldBaseModelManager):
             )
 
         table_ref = _bq_table_ref(schema_name, table_name)
+        literal_by_column = dict(zip(columns, value_strings, strict=True))
 
-        source_parts = [
-            f"{val} AS {_bq_ident(col)}"
-            for col, val in zip(columns, value_strings, strict=False)
-        ]
-        source_select = ", ".join(source_parts)
-
-        on_parts = [
-            f"target.{_bq_ident(cf)} = source.{_bq_ident(cf)}" for cf in conflict_fields
-        ]
-        on_clause = " AND ".join(on_parts)
+        where_clause = " AND ".join(
+            f"{_bq_ident(cf)} = {literal_by_column[cf]}" for cf in conflict_fields
+        )
 
         timestamp_columns = (
             {TS_INSERTED_AT, TS_UPDATED_AT} if track_timestamps else set()
         )
         update_parts = [
-            f"{_bq_ident(field)} = source.{_bq_ident(field)}"
+            f"{_bq_ident(field)} = {literal_by_column[field]}"
             for field in update_fields
             if field not in timestamp_columns
         ]
@@ -324,16 +325,19 @@ class NldBaseModelBigQueryManager(NldBaseModelManager):
         update_set = ", ".join(update_parts)
 
         insert_cols = _bq_cols(columns)
-        insert_vals = ", ".join(f"source.{_bq_ident(col)}" for col in columns)
+        insert_vals = ", ".join(literal_by_column[col] for col in columns)
 
-        merge_query = (
-            f"MERGE INTO {table_ref} AS target "
-            f"USING (SELECT {source_select}) AS source "
-            f"ON {on_clause} "
-            f"WHEN MATCHED THEN UPDATE SET {update_set} "
-            f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+        upsert_script = (
+            f"BEGIN TRANSACTION; "
+            f"UPDATE {table_ref} SET {update_set} WHERE {where_clause}; "
+            f"INSERT INTO {table_ref} ({insert_cols}) "
+            f"SELECT {insert_vals} FROM (SELECT 1) AS _seed "
+            f"WHERE NOT EXISTS ("
+            f"SELECT 1 FROM {table_ref} WHERE {where_clause}"
+            f"); "
+            f"COMMIT TRANSACTION;"
         )
-        self.connector.execute_query(merge_query)
+        self.connector.execute_query(upsert_script)
 
     def read_model(
         self,
@@ -413,12 +417,14 @@ class NldBaseModelBigQueryManager(NldBaseModelManager):
                 f"read_models query failed for {model_class.__name__}: "
                 f"{result.get_error_message()}"
             )
-        df = result.get_output_data_as_df()
-
+        # Use the raw records helper rather than the pandas DataFrame view:
+        # pandas promotes NULLs in numeric/timestamp columns to NaN (a float),
+        # which Pydantic then rejects on ``int | None`` / ``datetime | None``
+        # fields with "'float' object cannot be interpreted as an integer".
         json_fields = _get_json_serialized_fields(model_class)
 
         models = []
-        for row in df.to_dict("records"):
+        for row in result.get_result_records():
             for field_name in json_fields:
                 if (
                     field_name in row

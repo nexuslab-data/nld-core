@@ -15,7 +15,7 @@ Layout::
                                                  (--flow-uid UID | --latest)
                                                  [--format text|json] [--output]
     nld flow state incremental get-state  <name> [--namespace]
-                                                 [--include-post-processing]
+                                                 [--processing-only]
                                                  [--format text|json] [--output]
     nld flow state incremental get-planned <name> [--namespace]
                                                  [--format text|json] [--output]
@@ -127,7 +127,7 @@ def flow_state_execution_get_steps(ctx: click.Context, **kwargs: Any) -> Any:
 @params_flow.flow_name
 @params_flow.flow_namespace
 @params.profile_name
-@params_flow.state_include_post_processing
+@params_flow.state_processing_only
 @params_flow.state_file_output_params
 def flow_state_incremental_get_state(ctx: click.Context, **kwargs: Any) -> Any:
     """Return the current incremental state (text by default)."""
@@ -161,6 +161,7 @@ def flow_state_incremental_get_planned(ctx: click.Context, **kwargs: Any) -> Any
 @params.nld_root_folder_path
 @params_flow.flow_name
 @params_flow.flow_namespace
+@params.profile_name
 @params_flow.state_compute_persist
 @params_flow.state_compute_requestor
 @params_flow.state_compute_source_request_authorized

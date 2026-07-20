@@ -1,4 +1,8 @@
 import os
+from collections.abc import Sequence
+from typing import Protocol
+
+from nld.exceptions import MissingEnvironmentVariableException
 
 NLD_VAR_ENV_PREFIX = "NLD__VAR__"
 
@@ -22,3 +26,37 @@ def resolve_variables(
             if var_name:
                 variables[var_name] = env_value
     return variables
+
+
+class EnvironmentVariableDeclaration(Protocol):
+    """Structural type for a declared environment variable.
+
+    Any object exposing ``name``, ``required`` and ``default`` attributes is
+    accepted, so callers do not need to import a concrete model.
+    """
+
+    name: str
+    required: bool
+    default: str | None
+
+
+def resolve_environment_variables(
+    declarations: Sequence[EnvironmentVariableDeclaration] | None = None,
+) -> dict[str, str]:
+    """Resolve declared environment variables from the process environment.
+
+    For each declaration the value is read from ``os.environ``. When the
+    variable is absent its ``default`` is used; a required variable with no
+    value and no default raises ``MissingEnvironmentVariableException``. An
+    optional variable with neither a value nor a default is simply omitted
+    from the result.
+    """
+    resolved: dict[str, str] = {}
+    for declaration in declarations or []:
+        value = os.environ.get(declaration.name, declaration.default)
+        if value is None:
+            if declaration.required:
+                raise MissingEnvironmentVariableException(declaration.name)
+            continue
+        resolved[declaration.name] = value
+    return resolved

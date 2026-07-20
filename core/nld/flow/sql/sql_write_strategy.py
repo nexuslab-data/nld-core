@@ -5,7 +5,7 @@ from nld.connector.base.connector import SQLDataConnector
 from nld.connector.base.query import QueryExecResult
 from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
 from nld.structure import Structure
-from nld.structure.field.field_characterisation_def import (
+from nld.structure.field.field_characterisation_definition import (
     FieldCharacterisationDefinitionNames,
 )
 
@@ -406,23 +406,12 @@ class UpsertLogicalDeleteStrategy(SQLWriteStrategy):
         if upsert_result.failed():
             return results
 
-        # Use ``NOT EXISTS`` instead of the tuple ``(a, b) NOT IN
-        # (SELECT a, b FROM ...)`` form: BigQuery does not support
-        # multi-column tuple ``IN`` against a subquery, and the
-        # ``NOT EXISTS`` rewrite is semantically equivalent and
-        # works on Postgres, Snowflake, and BigQuery alike.
-        join_conditions = " AND ".join(
-            f"_src.{col} = {table_path}.{col}" for col in pk_columns
+        mark_result = connector.mark_absent_rows_deleted(
+            table_path=table_path,
+            sql_query=sql_query,
+            key_columns=pk_columns,
+            deletion_flag_column=deletion_flag_column,
         )
-        logical_delete_query = (
-            f"UPDATE {table_path} "
-            f"SET {deletion_flag_column} = TRUE "
-            f"WHERE NOT EXISTS ("
-            f"SELECT 1 FROM ({sql_query}) AS _src "
-            f"WHERE {join_conditions}"
-            f")"
-        )
-        mark_result = connector.execute_query(query=logical_delete_query)
         results.append(mark_result)
         return results
 

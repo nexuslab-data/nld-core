@@ -1,6 +1,7 @@
 from typing import ClassVar
 
 from nld.flow.incremental.impl.no_increment.state import (
+    NoIncrementPlannedProcessingDetailledState,
     NoIncrementPlannedProcessingState,
     NoIncrementProcessingState,
     NoIncrementSourceState,
@@ -25,6 +26,7 @@ NO_INCREMENT_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     source_state_class=NoIncrementSourceState,
     processing_state_class=NoIncrementProcessingState,
     planned_processing_state_class=NoIncrementPlannedProcessingState,
+    planned_processing_detailled_state_class=NoIncrementPlannedProcessingDetailledState,
     auto_processing_state_transition=True,
     partial_state_persistence=False,
     tracks_logical_deletion=False,

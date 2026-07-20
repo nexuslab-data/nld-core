@@ -21,11 +21,31 @@ class SnowflakeSqlglotDDLBuilder(BaseSqlglotDDLBuilder):
         primary_key_fields: list[str] | None = None,
         primary_key_name: str | None = None,
         if_not_exists: bool = False,
+        column_defaults: dict[str, str] | None = None,
     ) -> str:
-        """Build a CREATE TABLE with unquoted identifiers."""
+        """Build a CREATE TABLE with unquoted identifiers.
+
+        Defaults are inlined in the column definitions: Snowflake
+        cannot add a scalar default to an existing column (``SET
+        DEFAULT`` is reserved for sequences), so CREATE is the only
+        place a default can be declared.
+        """
+        defaults = column_defaults or {}
         col_defs: list[exp.Expression] = []
         for col_name, col_type, col_not_null in columns:
             constraints = []
+            default_value = defaults.get(col_name)
+            if default_value is not None:
+                constraints.append(
+                    exp.ColumnConstraint(
+                        kind=exp.DefaultColumnConstraint(
+                            this=exp.maybe_parse(
+                                default_value,
+                                dialect=self._dialect,
+                            ),
+                        ),
+                    )
+                )
             if col_not_null:
                 constraints.append(
                     exp.ColumnConstraint(kind=exp.NotNullColumnConstraint())
@@ -210,4 +230,139 @@ class SnowflakeSqlglotDDLBuilder(BaseSqlglotDDLBuilder):
         return (
             f"SELECT COUNT(*) FROM information_schema.schemata "
             f"WHERE schema_name = {schema_lit}"
+        )
+
+    def build_column_names_query(
+        self,
+        schema: str,
+        table: str,
+    ) -> str:
+        """Build a Snowflake-compatible column-names listing.
+
+        Snowflake stores unquoted identifiers in uppercase, so we
+        upper the comparison values to match.
+        """
+        schema_lit = exp.convert(schema.upper()).sql(dialect=self._dialect)
+        table_lit = exp.convert(table.upper()).sql(dialect=self._dialect)
+        return (
+            f"SELECT column_name FROM information_schema.columns "
+            f"WHERE table_schema = {schema_lit} "
+            f"AND table_name = {table_lit} "
+            f"ORDER BY ordinal_position"
+        )
+
+    # ------------------------------------------------------------------
+    # Catalog queries — the builder owns every catalog query the
+    # structure reader runs (the PostgreSQL principle).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def quoted_catalog_identifier(name: str) -> str:
+        """Quote an identifier for a Snowflake catalog (SHOW) statement.
+
+        Unquoted Snowflake identifiers are stored uppercase, so the
+        lowercase nld name is uppercased before quoting; embedded
+        double quotes are doubled so a hostile name cannot break the
+        statement.
+        """
+        return '"' + name.upper().replace('"', '""') + '"'
+
+    def _literal(self, value: str) -> str:
+        """Render a safely quoted SQL string literal."""
+        return exp.convert(value).sql(dialect=self._dialect)
+
+    def _show_scope(self, database: str, schema: str | None) -> str:
+        """Render the SHOW command scope for a database or schema."""
+        quoted_db = self.quoted_catalog_identifier(database)
+        if schema:
+            return f"SCHEMA {quoted_db}.{self.quoted_catalog_identifier(schema)}"
+        return f"DATABASE {quoted_db}"
+
+    def build_show_objects_query(
+        self,
+        database: str,
+        schema: str | None = None,
+        object_pattern: str | None = None,
+    ) -> str:
+        """Build the SHOW OBJECTS listing, optionally LIKE-filtered.
+
+        SHOW OBJECTS reads the authoritative metadata store, while the
+        INFORMATION_SCHEMA.TABLES view can serve stale rows right
+        after cross-session DDL.
+        """
+        scope = self._show_scope(database=database, schema=schema)
+        if object_pattern:
+            pattern = object_pattern.upper().replace("'", "''")
+            return f"SHOW OBJECTS LIKE '{pattern}' IN {scope}"
+        return f"SHOW OBJECTS IN {scope}"
+
+    def build_show_views_query(
+        self,
+        database: str,
+        schema: str,
+    ) -> str:
+        """Build the SHOW VIEWS listing whose text column carries definitions."""
+        return f"SHOW VIEWS IN {self._show_scope(database=database, schema=schema)}"
+
+    def build_show_primary_keys_query(
+        self,
+        database: str,
+        schema: str,
+        table_name: str | None = None,
+    ) -> str:
+        """Build the SHOW PRIMARY KEYS command, schema- or table-scoped."""
+        if table_name is not None:
+            return (
+                "SHOW PRIMARY KEYS IN TABLE "
+                f"{self.quoted_catalog_identifier(database)}"
+                f".{self.quoted_catalog_identifier(schema)}"
+                f".{self.quoted_catalog_identifier(table_name)}"
+            )
+        return (
+            f"SHOW PRIMARY KEYS IN {self._show_scope(database=database, schema=schema)}"
+        )
+
+    def build_show_unique_keys_query(
+        self,
+        database: str,
+        schema: str,
+        table_name: str | None = None,
+    ) -> str:
+        """Build the SHOW UNIQUE KEYS command, schema- or table-scoped."""
+        if table_name is not None:
+            return (
+                "SHOW UNIQUE KEYS IN TABLE "
+                f"{self.quoted_catalog_identifier(database)}"
+                f".{self.quoted_catalog_identifier(schema)}"
+                f".{self.quoted_catalog_identifier(table_name)}"
+            )
+        return (
+            f"SHOW UNIQUE KEYS IN {self._show_scope(database=database, schema=schema)}"
+        )
+
+    def build_table_columns_query(
+        self,
+        database: str,
+        schema: str,
+        table_name: str | None = None,
+    ) -> str:
+        """Build the INFORMATION_SCHEMA.COLUMNS read, optionally per table."""
+        table_filter = (
+            f"AND TABLE_NAME = {self._literal(table_name)} "
+            if table_name is not None
+            else ""
+        )
+        select_columns = (
+            "COLUMN_NAME" if table_name is not None else "TABLE_NAME, COLUMN_NAME"
+        )
+        return (
+            f"SELECT {select_columns}, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, "
+            "CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE "
+            "FROM INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE TABLE_CATALOG = {self._literal(database)} "
+            f"AND TABLE_SCHEMA = {self._literal(schema)} "
+            f"{table_filter}"
+            "ORDER BY "
+            + ("" if table_name is not None else "TABLE_NAME, ")
+            + "ORDINAL_POSITION"
         )

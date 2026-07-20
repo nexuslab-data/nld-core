@@ -1,16 +1,12 @@
+from .deploy_snapshot import DeploySnapshot
+from .deploy_target_factory import StructureDeployTargetFactory
+from .structure_change import StructureChangeEntry, StructureDeployAction
 from .structure_deploy_executor import StructureDeployExecutor
 from .structure_deploy_manager import (
     StructureChangeSet,
     StructureDeployManager,
     StructureDeployResult,
 )
-from .structure_deploy_manifest import (
-    StructureDeployAction,
-    StructureDeployManifest,
-    StructureDeployManifestEntry,
-    StructureDeployScope,
-)
-from .structure_deploy_planner import StructureDeployPlanner
 from .structure_diff import (
     CharacterisationDiff,
     DiffAction,
@@ -18,11 +14,11 @@ from .structure_diff import (
     StructureDiff,
 )
 from .structure_diff_computer import StructureDiffComputer
-from .structure_diff_ddl_generator import BaseStructureDiffDDLGenerator, DDLStatement
-from .structure_manifest_discovery import (
-    discover_manifests,
-    get_deployments_folder_path,
+from .structure_diff_ddl_statement_builder import (
+    BaseStructureDiffDDLStatementBuilder,
+    DDLStatement,
 )
+from .structure_drift import DeploymentDriftError, DriftReport, classify_drift
 from .structure_metadata_backend_manager import StructureMetadataBackendManager
 from .structure_metadata_models import StructureHistoryRow, StructureMetadataRow
 from .structure_schema_history import (
@@ -36,20 +32,21 @@ from .structure_schema_history import (
 )
 
 __all__ = [
-    "BaseStructureDiffDDLGenerator",
+    "BaseStructureDiffDDLStatementBuilder",
+    "DeploySnapshot",
     "CharacterisationDiff",
     "DDLStatement",
+    "DeploymentDriftError",
     "DiffAction",
+    "DriftReport",
     "FieldDiff",
+    "StructureChangeEntry",
     "StructureChangeSet",
     "StructureDeployAction",
     "StructureDeployExecutor",
-    "StructureDeployManifest",
-    "StructureDeployManifestEntry",
     "StructureDeployManager",
-    "StructureDeployPlanner",
     "StructureDeployResult",
-    "StructureDeployScope",
+    "StructureDeployTargetFactory",
     "StructureDiff",
     "StructureDiffComputer",
     "StructureHistoryRow",
@@ -60,8 +57,7 @@ __all__ = [
     "StructureSchemaSnapshotCharacterisation",
     "StructureSchemaSnapshotField",
     "build_structure_snapshot_json",
+    "classify_drift",
     "compute_structure_hash",
     "compute_structure_schema_hash",
-    "discover_manifests",
-    "get_deployments_folder_path",
 ]

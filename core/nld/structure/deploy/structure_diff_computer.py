@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from nld.connector.base.deploy_capabilities import (
+    ConnectorDeployCapabilities,
+    normalize_comparable_data_type,
+)
 from nld.structure.deploy.structure_diff import (
     CharacterisationDiff,
     DiffAction,
@@ -31,8 +35,16 @@ class StructureDiffComputer:
     """Compares a desired Structure against a current Structure.
 
     Produces a StructureDiff describing field-level and
-    characterisation-level differences.
+    characterisation-level differences. The optional connector
+    capabilities enable engine-specific data-type equivalences in
+    the comparison.
     """
+
+    def __init__(
+        self,
+        capabilities: ConnectorDeployCapabilities | None = None,
+    ) -> None:
+        self._capabilities = capabilities
 
     def compute_from_database(
         self,
@@ -85,6 +97,61 @@ class StructureDiffComputer:
             table_exists=True,
             field_diffs=field_diffs,
             characterisation_diffs=characterisation_diffs,
+            order_mismatch=self._compute_order_mismatch(
+                desired=desired,
+                current=current,
+            ),
+        )
+
+    def _compute_order_mismatch(
+        self,
+        desired: Structure,
+        current: Structure,
+    ) -> bool:
+        """Detect a physical column order differing from the desired order.
+
+        Order is cosmetic for query correctness and no engine reorders
+        in place, so it is only compared when enforced. A structure's
+        ``enforce_field_order`` overrides explicitly (``True``/
+        ``False``); left undeclared (``None``), the connector's own
+        ``enforce_field_order_default`` capability decides.
+
+        Two situations count as a mismatch: the fields present on
+        both sides sit in a different relative order (a genuine
+        reorder), or a new field is declared before an existing one —
+        a plain ADD COLUMN appends physically last, so honouring the
+        declared position needs a positional ADD (engines declaring
+        ``add_column_positioned``) or a REBUILD. Fields appended
+        after every existing one, and drops, never force a rebuild
+        by themselves.
+        """
+        connector_default = bool(
+            self._capabilities and self._capabilities.enforce_field_order_default
+        )
+        effective_enforce_field_order = (
+            desired.enforce_field_order
+            if desired.enforce_field_order is not None
+            else connector_default
+        )
+        if not effective_enforce_field_order:
+            return False
+
+        desired_order = [field.name for field in desired.get_all_fields()]
+        current_order = [field.name for field in current.get_all_fields()]
+        common_names = set(desired_order) & set(current_order)
+
+        desired_common = [name for name in desired_order if name in common_names]
+        current_common = [name for name in current_order if name in common_names]
+        if desired_common != current_common:
+            return True
+
+        if self._capabilities and self._capabilities.add_column_positioned:
+            return False
+        if not desired_common:
+            return False
+        last_common_index = desired_order.index(desired_common[-1])
+        return any(
+            name not in common_names for name in desired_order[:last_common_index]
         )
 
     def _compute_field_diffs(
@@ -115,10 +182,27 @@ class StructureDiffComputer:
         )
 
         for field_name in sorted(desired_names - current_names):
+            added_field = desired_fields[field_name]
             diffs.append(
                 FieldDiff(
                     action=DiffAction.ADD,
                     field_name=field_name,
+                    data_type_to=normalize_comparable_data_type(
+                        data_type=added_field.data_type,
+                        capabilities=self._capabilities,
+                    ),
+                    default_to=(
+                        str(added_field.default_value)
+                        if added_field.default_value is not None
+                        else None
+                    ),
+                    length_to=added_field.length,
+                    precision_to=added_field.precision,
+                    nullable_to=(
+                        False
+                        if field_name in pk_field_names
+                        else not added_field.is_mandatory()
+                    ),
                 )
             )
 
@@ -156,15 +240,33 @@ class StructureDiffComputer:
                 as non-nullable regardless of its mandatory
                 characterisation, since PK columns are always NOT NULL.
         """
-        desired_type = desired.data_type.upper()
-        current_type = current.data_type.upper()
+        desired_type = normalize_comparable_data_type(
+            data_type=desired.data_type,
+            capabilities=self._capabilities,
+        )
+        current_type = normalize_comparable_data_type(
+            data_type=current.data_type,
+            capabilities=self._capabilities,
+        )
         desired_nullable = False if is_primary_key else not desired.is_mandatory()
         current_nullable = not current.is_mandatory()
+        desired_default = (
+            str(desired.default_value) if desired.default_value is not None else None
+        )
+        current_default = (
+            str(current.default_value) if current.default_value is not None else None
+        )
 
         has_type_change = desired_type != current_type
         has_length_change = desired.length != current.length
         has_precision_change = desired.precision != current.precision
         has_nullable_change = desired_nullable != current_nullable
+        # Compared only when the asset declares a default: a live
+        # default the YAML does not manage (e.g. a serial sequence)
+        # must never churn a DROP DEFAULT.
+        has_default_change = (
+            desired_default is not None and desired_default != current_default
+        )
 
         if not any(
             [
@@ -172,6 +274,7 @@ class StructureDiffComputer:
                 has_length_change,
                 has_precision_change,
                 has_nullable_change,
+                has_default_change,
             ]
         ):
             return None
@@ -181,6 +284,8 @@ class StructureDiffComputer:
             field_name=desired.name,
             data_type_from=current_type if has_type_change else None,
             data_type_to=desired_type if has_type_change else None,
+            default_from=current_default if has_default_change else None,
+            default_to=desired_default if has_default_change else None,
             length_from=current.length if has_length_change else None,
             length_to=desired.length if has_length_change else None,
             precision_from=current.precision if has_precision_change else None,
@@ -197,7 +302,9 @@ class StructureDiffComputer:
         """Compare structure-level characterisations (INDEX, PRIMARY_KEY, UNIQUE)."""
         diffs: list[CharacterisationDiff] = []
 
-        desired_map = self._build_characterisation_map(desired.characterisations)
+        desired_map = self._build_characterisation_map(
+            desired.get_deployable_characterisations(),
+        )
         current_map = self._build_characterisation_map(current.characterisations)
 
         desired_keys = set(desired_map.keys())

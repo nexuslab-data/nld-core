@@ -5,6 +5,7 @@ from nld.flow.incremental.base.manager import (
     IncrementalBackendStateManager,
 )
 from nld.flow.incremental.impl.no_increment.state import (
+    NoIncrementPlannedProcessingDetailledState,
     NoIncrementPlannedProcessingState,
     NoIncrementProcessingState,
     NoIncrementSourceState,
@@ -19,6 +20,7 @@ class NoIncrementStateBackendManager[DATA_CONNECTOR: DataConnector[Any]](
         NoIncrementSourceState,
         NoIncrementProcessingState,
         NoIncrementPlannedProcessingState,
+        NoIncrementPlannedProcessingDetailledState,
     ],
 ):
     """

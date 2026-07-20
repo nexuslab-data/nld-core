@@ -2,9 +2,32 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
+from nld.misc import ValidationFinding
 from nld.pydantic import NldNamedBaseModel, NldNamespacedBaseModelWrapper
 
 from .structure_model_link import StructureModelLink
+
+
+class StructureModelValidationFinding(ValidationFinding):
+    """A single structure model validation finding.
+
+    Adds the offending link, mapped field and side (``left``/``right``) on top
+    of the shared ValidationFinding context; ``entity`` holds the model name.
+    """
+
+    link: str = Field(
+        description="Name of the link the finding is about",
+    )
+    field_name: str = Field(
+        description="Name of the offending mapped field",
+    )
+    side: str = Field(
+        description="Side of the mapping the field belongs to (left or right)",
+    )
+
+    def get_subject(self) -> str:
+        """Locate the finding on its link side and field."""
+        return f"{self.link}.{self.side}.{self.field_name}"
 
 
 class StructureModel(NldNamedBaseModel):
@@ -21,8 +44,8 @@ class StructureModel(NldNamedBaseModel):
                 left_structure: source.orders
                 right_structure: source.customers
                 cardinality: many_to_one
-                field_mappings:
-                    customer_id: id
+                left_to_right_mappings:
+                    - {left: customer_id, right: id}
     """
 
     description: str | None = Field(
@@ -70,20 +93,20 @@ class StructureModel(NldNamedBaseModel):
         """Checks whether a link exists."""
         return link_name in self.links
 
-    def _is_valid(self) -> list[str]:
-        """Validates field mappings against resolved structures.
+    def validate_mappings(self) -> list[StructureModelValidationFinding]:
+        """Validates join-key mappings against resolved structures.
 
         Resolves each link's left and right structures and checks that
-        every field name in field_mappings exists in the corresponding
+        every column in left_to_right_mappings exists in the corresponding
         structure. Requires an active NldExecutionContext with a loaded
         entity registry.
 
         Returns:
-            A list of validation error messages. Empty if valid.
+            The list of findings; empty when every mapping is valid.
         """
         from nld.service.nld_entity_registry import EntityTypeNames
 
-        errors: list[str] = []
+        findings: list[StructureModelValidationFinding] = []
         for link_name, link in self.links.items():
             left_structure = link.left_structure.resolve(
                 entity_type=EntityTypeNames.STRUCTURE,
@@ -95,18 +118,36 @@ class StructureModel(NldNamedBaseModel):
             left_field_names = left_structure.get_field_names()
             right_field_names = right_structure.get_field_names()
 
-            for left_field, right_field in link.field_mappings.items():
+            for mapping in link.left_to_right_mappings:
+                left_field = mapping.left
+                right_field = mapping.right
                 if left_field not in left_field_names:
-                    errors.append(
-                        f"Link '{link_name}': left field '{left_field}' "
-                        f"not found in structure '{left_structure.name}'"
+                    findings.append(
+                        StructureModelValidationFinding(
+                            entity=self.name,
+                            link=link_name,
+                            field_name=left_field,
+                            side="left",
+                            message=(
+                                f"Link '{link_name}': left field '{left_field}' "
+                                f"not found in structure '{left_structure.name}'"
+                            ),
+                        )
                     )
                 if right_field not in right_field_names:
-                    errors.append(
-                        f"Link '{link_name}': right field '{right_field}' "
-                        f"not found in structure '{right_structure.name}'"
+                    findings.append(
+                        StructureModelValidationFinding(
+                            entity=self.name,
+                            link=link_name,
+                            field_name=right_field,
+                            side="right",
+                            message=(
+                                f"Link '{link_name}': right field '{right_field}' "
+                                f"not found in structure '{right_structure.name}'"
+                            ),
+                        )
                     )
-        return errors
+        return findings
 
 
 class NamespacedStructureModel(NldNamespacedBaseModelWrapper["StructureModel"]):

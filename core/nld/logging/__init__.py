@@ -8,8 +8,10 @@ from .base import (
     StandardErrorEvent,
     StandardInfoEvent,
     StandardTestEvent,
+    StandardTraceEvent,
     StandardWarningEvent,
     TestEvent,
+    TraceEvent,
     WarnEvent,
 )
 from .logger import (
@@ -23,6 +25,7 @@ from .logger import (
     log_event,
     log_event_default,
     log_info_default,
+    log_trace_default,
     log_warn_default,
 )
 
@@ -39,8 +42,10 @@ __all__ = [
     "StandardErrorEvent",
     "StandardInfoEvent",
     "StandardTestEvent",
+    "StandardTraceEvent",
     "StandardWarningEvent",
     "TestEvent",
+    "TraceEvent",
     "WarnEvent",
     "init_logger_for_tests",
     "log_debug_default",
@@ -48,6 +53,7 @@ __all__ = [
     "log_event",
     "log_event_default",
     "log_info_default",
+    "log_trace_default",
     "log_warn_default",
     "StandardNldFormatter",
 ]

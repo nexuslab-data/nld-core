@@ -13,6 +13,26 @@ class BaseSqlglotDDLBuilder:
     def __init__(self, dialect: str) -> None:
         self._dialect = dialect
 
+    def build_type_expression(
+        self,
+        data_type: str,
+        length: int = 0,
+        precision: int = 0,
+    ) -> str:
+        """Build a column type expression with length and precision.
+
+        The single place a declared type renders to DDL, shared by
+        CREATE TABLE, the ALTER statement builders and the connectors'
+        own table creation — the same field must emit the same type
+        everywhere.
+        """
+        upper_type = data_type.upper()
+        if length > 0 and precision > 0:
+            return f"{upper_type}({length}, {precision})"
+        if length > 0:
+            return f"{upper_type}({length})"
+        return upper_type
+
     def build_exists_query(
         self,
         schema: str,
@@ -53,6 +73,21 @@ class BaseSqlglotDDLBuilder:
             f"WHERE table_schema = {schema_lit} "
             f"AND table_name = {table_lit} "
             f"AND column_name = {column_lit})"
+        )
+
+    def build_column_names_query(
+        self,
+        schema: str,
+        table: str,
+    ) -> str:
+        """Build a query listing a table's column names in physical order."""
+        schema_lit = exp.convert(schema).sql(dialect=self._dialect)
+        table_lit = exp.convert(table).sql(dialect=self._dialect)
+        return (
+            f"SELECT column_name FROM information_schema.columns "
+            f"WHERE table_schema = {schema_lit} "
+            f"AND table_name = {table_lit} "
+            f"ORDER BY ordinal_position"
         )
 
     def build_create_table(
@@ -120,6 +155,25 @@ class BaseSqlglotDDLBuilder:
             ),
             kind="TABLE",
             exists=if_exists,
+        )
+        return drop.sql(dialect=self._dialect)
+
+    def build_drop_view(
+        self,
+        schema: str,
+        table: str,
+        if_exists: bool = False,
+        cascade: bool = False,
+    ) -> str:
+        """Build a DROP VIEW statement."""
+        drop = exp.Drop(
+            this=quoted_table(
+                schema=schema,
+                table=table,
+            ),
+            kind="VIEW",
+            exists=if_exists,
+            cascade=cascade,
         )
         return drop.sql(dialect=self._dialect)
 
@@ -247,6 +301,26 @@ class BaseSqlglotDDLBuilder:
         return (
             f"ALTER TABLE {table_ref} ALTER COLUMN {col_id} "
             f"TYPE {new_type} USING {col_id}::{new_type}"
+        )
+
+    def build_alter_set_default(
+        self,
+        schema: str,
+        table: str,
+        column_name: str,
+        default_value: str,
+    ) -> str:
+        """Build an ALTER TABLE ALTER COLUMN SET DEFAULT statement."""
+        table_ref = quoted_table(
+            schema=schema,
+            table=table,
+        ).sql(dialect=self._dialect)
+        col_id = exp.to_identifier(
+            column_name,
+            quoted=True,
+        ).sql(dialect=self._dialect)
+        return (
+            f"ALTER TABLE {table_ref} ALTER COLUMN {col_id} SET DEFAULT {default_value}"
         )
 
     def build_alter_set_not_null(

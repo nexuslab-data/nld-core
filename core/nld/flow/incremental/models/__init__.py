@@ -12,22 +12,16 @@ from .logic import (
     FlowIncrementalParams,
 )
 from .manifest import FlowIncrementalTypeManifest
-from .plan import (
-    INCREMENTAL_PLAN_STATUS,
-    PLANNED_STATE_STRATEGIES,
-    FlowPlannedProcessingState,
-    FlowStatePlan,
-    IncrementalPlanStatus,
-    PlannedStateStrategy,
-)
 from .referential import (
     FLOW_INCREMENTAL_PERIOD_RANGE_TYPE_LITERAL,
     FLOW_INCREMENTAL_TYPE_LITERAL,
+    INCREMENTAL_PLAN_STATUS,
     INCREMENTAL_PROCESSING_STATUS,
     FlowIncrementalPeriodRangeType,
     FlowIncrementalType,
     FlowSourceSelection,
     FlowTargetUpdateGranularity,
+    IncrementalPlanStatus,
     IncrementalProcessingStatus,
     IncrementalStateStatus,
     SourceAvailability,
@@ -40,9 +34,14 @@ from .request import (
     FlowRequestType,
 )
 from .state import (
+    PLANNED_STATE_STRATEGIES,
+    FlowPlannedProcessingDetailledState,
+    FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
     FlowState,
+    FlowStatePlan,
+    PlannedStateStrategy,
 )
 
 __all__ = [
@@ -58,6 +57,7 @@ __all__ = [
     "FlowIncrementalPeriodRangeType",
     "FlowIncrementalType",
     "FlowIncrementalTypeManifest",
+    "FlowPlannedProcessingDetailledState",
     "FlowPlannedProcessingState",
     "FlowProcessingState",
     "FlowRequest",

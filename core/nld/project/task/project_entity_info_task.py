@@ -37,12 +37,11 @@ class ProjectEntityInfoTask(StandardTask):
 
     def _display_entity_info(self, registry: Any) -> None:
         """Display entity information for the specified entity type."""
-        self.log_info("=" * 60)
-        self.log_info(f"Entity Type: {self.entity_type}")
+        title_lines = [f"Entity Type: {self.entity_type}"]
         if self.namespace:
-            self.log_info(f"Namespace: {self.namespace}")
-        self.log_info("=" * 60)
-        self.log_info("")
+            title_lines.append(f"Namespace: {self.namespace}")
+        self.log_section_header(*title_lines)
+        self.log_empty_line()
 
         namespaces = registry.get_entity_type_namespaces(entity_type=self.entity_type)
 
@@ -55,11 +54,11 @@ class ProjectEntityInfoTask(StandardTask):
 
         if not namespaces:
             self.log_info(f"No entities found for entity type: {self.entity_type}")
-            self.log_info("=" * 60)
+            self.log_separator_line(char="=")
             return
 
         self.log_info("Namespaces and Entity Counts:")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
         total_count = 0
         for namespace in namespaces:
@@ -72,9 +71,9 @@ class ProjectEntityInfoTask(StandardTask):
             total_count += count
             self._display_namespace_count(namespace=namespace, count=count)
 
-        self.log_info("-" * 60)
+        self.log_separator_line()
         self.log_info(f"Total Distinct Keys: {total_count}")
-        self.log_info("-" * 60)
+        self.log_separator_line()
 
     def _display_namespace_count(self, namespace: str, count: int) -> None:
         """Display formatted count for a namespace."""

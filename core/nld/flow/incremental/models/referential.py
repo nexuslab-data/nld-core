@@ -30,6 +30,10 @@ class IncrementalStateStatus:
     DELETED = "DELETED"
     FAILED = "FAILED"
     SUCCEEDED = "SUCCEEDED"
+    # Terminal: the source authoritatively answered that this key does not
+    # exist (e.g. a deterministic 404). Like SUCCEEDED, it is never re-attempted
+    # by DELTA/BACKFILL_DELTA; FULL and explicit --keys still re-attempt it.
+    PERMANENTLY_EXCLUDED = "PERMANENTLY_EXCLUDED"
 
 
 class IncrementalProcessingStatus:
@@ -38,6 +42,11 @@ class IncrementalProcessingStatus:
     TO_BE_DELETED = "TO_BE_DELETED"
     FAILED = "FAILED"
     SUCCEEDED = "SUCCEEDED"
+    # The task determined during the run that the source does not expose this
+    # key at all; persisted as IncrementalStateStatus.PERMANENTLY_EXCLUDED.
+    # Distinct from EXCLUDED, which is a per-run selection (budget/keys filter)
+    # that leaves the persisted state untouched.
+    PERMANENTLY_EXCLUDED = "PERMANENTLY_EXCLUDED"
 
 
 INCREMENTAL_PROCESSING_STATUS = [
@@ -46,6 +55,20 @@ INCREMENTAL_PROCESSING_STATUS = [
     IncrementalProcessingStatus.TO_BE_DELETED,
     IncrementalProcessingStatus.FAILED,
     IncrementalProcessingStatus.SUCCEEDED,
+    IncrementalProcessingStatus.PERMANENTLY_EXCLUDED,
+]
+
+
+class IncrementalPlanStatus:
+    PLANNED = "PLANNED"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+
+
+INCREMENTAL_PLAN_STATUS = [
+    IncrementalPlanStatus.CANCELLED,
+    IncrementalPlanStatus.COMPLETED,
+    IncrementalPlanStatus.PLANNED,
 ]
 
 

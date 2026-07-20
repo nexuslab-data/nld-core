@@ -14,6 +14,7 @@ from nld.flow.sql.sql_glot_utils import build_technical_timestamps_query
 from nld.flow.sql.sql_query_resolver import render_sql_from_flow_definition
 from nld.flow.task.data_flow_task import DataFlowTask
 from nld.flow.utils import FlowStepCategory
+from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
 from nld.parameters import ExecutionParameterDefinition
 from nld.structure import Structure
 from nld.structure.field import FieldCharacterisationDefinitionNames
@@ -99,6 +100,7 @@ class SQLFlowTask(DataFlowTask):
         table_path = f"{self.target_schema}.{self.data_flow_definition.name}"
 
         write_strategy = get_write_strategy(write_strategy_name)
+        self._assert_strategy_incremental_compatible(write_strategy)
         target_structure = self._resolve_target_structure(write_strategy)
 
         self.log_info(
@@ -139,6 +141,28 @@ class SQLFlowTask(DataFlowTask):
                 step_category=FlowStepCategory.POST_HOOK,
                 template_variables=variables,
             )
+
+    def _assert_strategy_incremental_compatible(
+        self,
+        write_strategy: SQLWriteStrategy,
+    ) -> None:
+        """Reject strategies whose semantics break under a filtered source.
+
+        UPSERT_LOGICAL_DELETE flags every target row absent from the
+        source query as deleted: an incrementally filtered (delta) source
+        would mass-flag all untouched rows. The check runs even when the
+        filter would no-op (no predecessors) — declaring ``incremental``
+        on such a flow is a configuration error either way.
+        """
+        if write_strategy.name != FlowUpdateStrategies.UPSERT_LOG_DEL:
+            return
+        if self.data_flow_definition.incremental is None:
+            return
+        raise ValueError(
+            f"Write strategy '{write_strategy.name}' requires the full "
+            f"source extent and cannot be combined with an incremental "
+            f"configuration on flow '{self.data_flow_definition.name}'"
+        )
 
     def _apply_incremental_filter(self, sql_query: str) -> str:
         """Apply incremental WHERE clause filtering to the SQL query.
@@ -216,7 +240,7 @@ class SQLFlowTask(DataFlowTask):
                 )
                 return
 
-            result_dict = query_result.get_output_data_as_dict()
+            result_dict = query_result.get_result_dict()
             if not result_dict:
                 return
 

@@ -5,6 +5,10 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+from nld.connector.base.deploy_capabilities import (
+    ConnectorDeployCapabilities,
+    normalize_comparable_data_type,
+)
 from nld.pydantic.base_model import NldBaseModel
 from nld.structure.deploy.structure_diff import StructureDiff
 from nld.structure.field.field import Field
@@ -25,14 +29,35 @@ class StructureSchemaSnapshotField(NldBaseModel):
     default_value: str | int | None = None
 
     @classmethod
-    def from_field(cls, field: Field) -> StructureSchemaSnapshotField:
-        """Build a snapshot field from a Structure Field."""
+    def from_field(
+        cls,
+        field: Field,
+        in_primary_key: bool = False,
+        capabilities: ConnectorDeployCapabilities | None = None,
+    ) -> StructureSchemaSnapshotField:
+        """Build a snapshot field from a Structure Field.
+
+        Primary-key members are never nullable in the database, so
+        the snapshot records them as non-nullable even when the
+        definition does not carry an explicit mandatory
+        characterisation — keeping definition-derived and
+        introspection-derived snapshots comparable.
+
+        The data type is stored in its canonical comparable form for
+        the same reason: engines spell semantically-equal types
+        differently on read-back (Snowflake reports a declared
+        ``NUMERIC`` as ``NUMBER``), and a raw-spelling snapshot would
+        hash a schema as changed when nothing physical changed.
+        """
         return cls(
             name=field.name,
-            data_type=field.data_type.upper(),
+            data_type=normalize_comparable_data_type(
+                data_type=field.data_type,
+                capabilities=capabilities,
+            ),
             length=field.length,
             precision=field.precision,
-            nullable=not field.is_mandatory(),
+            nullable=not (field.is_mandatory() or in_primary_key),
             default_value=field.default_value,
         )
 
@@ -49,9 +74,15 @@ class StructureSchemaSnapshotCharacterisation(NldBaseModel):
         cls,
         characterisation: StructureCharacterisation,
     ) -> StructureSchemaSnapshotCharacterisation:
-        """Build a snapshot characterisation from a StructureCharacterisation."""
+        """Build a snapshot characterisation from a StructureCharacterisation.
+
+        The name is lowercased because case-folding engines report
+        constraint names uppercase on read-back (Snowflake), and the
+        snapshot must hash equal across the definition-derived and
+        introspection-derived sides.
+        """
         return cls(
-            name=characterisation.name,
+            name=characterisation.name.lower(),
             characterisation_type=characterisation.characterisation,
             linked_fields=characterisation.linked_fields or [],
         )
@@ -77,21 +108,32 @@ class StructureSchemaSnapshot(NldBaseModel):
         cls,
         structure: Structure,
         namespace: str,
+        capabilities: ConnectorDeployCapabilities | None = None,
     ) -> StructureSchemaSnapshot:
         """Build a snapshot from a Structure with templates expanded.
 
         Uses get_all_fields() to include template-inherited fields
-        in their correct order.
+        in their correct order. ``capabilities`` carries the engine's
+        comparable data type aliases so the snapshot hashes equal
+        across declared and read-back spellings.
         """
         all_fields = structure.get_all_fields()
+        primary_key_field_names = {
+            field.name for field in structure.get_primary_key_fields()
+        }
         snapshot_fields = [
-            StructureSchemaSnapshotField.from_field(field=field) for field in all_fields
+            StructureSchemaSnapshotField.from_field(
+                field=field,
+                in_primary_key=field.name in primary_key_field_names,
+                capabilities=capabilities,
+            )
+            for field in all_fields
         ]
         snapshot_characterisations = [
             StructureSchemaSnapshotCharacterisation.from_characterisation(
                 characterisation=char,
             )
-            for char in structure.characterisations
+            for char in structure.get_deployable_characterisations()
         ]
         return cls(
             structure_name=structure.name,
@@ -157,6 +199,7 @@ class StructureSchemaHistoryRecord(NldBaseModel):
     """
 
     deployment_id: str
+    uid: str
     namespace: str
     object_path: str
     structure_name: str
@@ -169,6 +212,7 @@ class StructureSchemaHistoryRecord(NldBaseModel):
     ddl_applied: bool = False
     ddl_statements: list[str] = []
     previous_deployment_id: str | None = None
+    record_source: str = "deployment"
 
     @classmethod
     def build(
@@ -184,10 +228,18 @@ class StructureSchemaHistoryRecord(NldBaseModel):
         ddl_applied: bool = False,
         ddl_statements: list[str] | None = None,
         previous_deployment_id: str | None = None,
+        record_source: str = "deployment",
+        uid: str | None = None,
     ) -> StructureSchemaHistoryRecord:
-        """Create a new history record with auto-generated ID and timestamp."""
+        """Create a new history record with auto-generated ID and timestamp.
+
+        The ``uid`` is the stable backend asset identity: minted on
+        the first record of an asset and carried through every later
+        record, including across declared renames.
+        """
         return cls(
             deployment_id=str(uuid.uuid4()),
+            uid=uid if uid is not None else str(uuid.uuid4()),
             namespace=namespace,
             object_path=object_path,
             structure_name=structure_name,
@@ -200,6 +252,7 @@ class StructureSchemaHistoryRecord(NldBaseModel):
             ddl_applied=ddl_applied,
             ddl_statements=ddl_statements or [],
             previous_deployment_id=previous_deployment_id,
+            record_source=record_source,
         )
 
     def schema_snapshot_json(self) -> str:

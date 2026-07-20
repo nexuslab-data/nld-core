@@ -19,6 +19,24 @@ from nld.parameters import (
 from nld.utils.mixin import NldMixIn
 
 
+def steps_from_loaded_executions(
+    flow_uid: str,
+    execution_state: FlowExecutionState,
+    execution_history: FlowExecutionHistory,
+) -> list[FlowStepExecutionInfo]:
+    """Find the inline step list for ``flow_uid`` among already-read executions.
+
+    Blob-based backends store each execution's steps inline in the state /
+    history files, so resolving steps is a lookup over what
+    ``retrieve_latest_execution_state`` already returned rather than a
+    separate query.
+    """
+    for info in (execution_state.last_processed, *execution_history.executions):
+        if info is not None and info.flow_uid == flow_uid:
+            return list(info.steps or [])
+    return []
+
+
 class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn, ABC):
     """Execution Backend State Manager.
 
@@ -94,7 +112,7 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
         (target structure, predecessors, declared properties, ...) and
         translate them into backend parameter values like ``s3_root_path``.
         The factory merges the result with per-side
-        ``StateBackendConnectorConfig.params`` and any explicit kwargs
+        ``ConnectorConfig.params`` and any explicit kwargs
         before validating against ``param_definitions``.
 
         The default implementation returns an empty dict so backends
@@ -103,10 +121,23 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
         return {}
 
     # Read-only accessor methods (used by `nld flow state` CLI).
-    # Default implementations are derived from ``retrieve_latest_execution_state``
-    # so every backend supports the read API out of the box; subclasses may
-    # override with optimised variants (e.g. row-based backends joining step
-    # rows in a dedicated query).
+    # The headers come from ``retrieve_latest_execution_state``; the steps
+    # are then resolved per backend through ``_get_steps_for`` so the read
+    # API behaves identically regardless of how a backend stores steps
+    # (row-based backends join a dedicated step table; blob-based backends
+    # return the steps already loaded inline on the info).
+    @abc.abstractmethod
+    def _get_steps_for(self, flow_uid: str) -> list[FlowStepExecutionInfo]:
+        """Return the recorded steps for a single execution.
+
+        Row-based backends query their step-history table filtered on
+        ``flow_uid``; blob-based backends return the steps stored inline for
+        that execution. Declared abstract so every backend must state how it
+        reads steps — a backend that forgets would otherwise silently report
+        "no steps".
+        """
+        raise NotImplementedError("'_get_steps_for' method is not yet implemented")
+
     def get_latest_execution_info(
         self, *, with_steps: bool = True
     ) -> FlowExecutionInfo | None:
@@ -122,8 +153,30 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
         info = execution_state.last_processed
         if info is None:
             return None
-        if not with_steps:
-            info.steps = None
+        info.steps = self._get_steps_for(info.flow_uid) if with_steps else None
+        return info
+
+    def get_execution_info(
+        self, flow_uid: str, *, with_steps: bool = True
+    ) -> FlowExecutionInfo | None:
+        """Return a single recorded execution by its ``flow_uid``.
+
+        Read-only accessor used by tooling to inspect one execution
+        without starting a flow run. Unlike ``get_execution_history`` this
+        is never subject to any history listing limit: the full recorded
+        history is scanned so an execution older than the most recent runs
+        can still be inspected by uid. Returns None when no execution
+        matches. When ``with_steps`` is False, the ``steps`` field is left
+        empty.
+        """
+        _, history = self.retrieve_latest_execution_state()
+        info = next(
+            (i for i in history.executions if i.flow_uid == flow_uid),
+            None,
+        )
+        if info is None:
+            return None
+        info.steps = self._get_steps_for(info.flow_uid) if with_steps else None
         return info
 
     def get_execution_history(
@@ -146,9 +199,8 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
         )
         if limit is not None:
             executions = executions[:limit]
-        if not with_steps:
-            for info in executions:
-                info.steps = None
+        for info in executions:
+            info.steps = self._get_steps_for(info.flow_uid) if with_steps else None
         return FlowExecutionHistory(executions=executions)
 
     # Execution State methods

@@ -1,6 +1,7 @@
 from typing import Any, ClassVar
 
 from nld.parameters import ExecutionParameterDefinition
+from nld.service import EntityTypeNames
 from nld.task.base import StandardTask
 
 
@@ -30,7 +31,12 @@ class StructureAdaptTask(StandardTask):
     ) -> None:
         super().__init__(**kwargs)
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[
+                EntityTypeNames.STRUCTURE,
+                EntityTypeNames.STRUCTURE_ADAPTER,
+            ],
+        )
 
         namespaced_adapter = (
             self.execution_context.entity_registry.get_structure_adapter(

@@ -1,45 +1,75 @@
 from __future__ import annotations
 
-import os
+import json
+import uuid
 from typing import Any, ClassVar, cast
 
 from nld.connector.base.connector import SQLDataConnector
+from nld.deploy.change_file_loader import (
+    group_backfill_defaults_by_structure,
+    group_field_renames_by_structure,
+    group_structure_renames_by_source,
+    group_structure_renames_by_target,
+    resolve_pending_change_files,
+    validate_backfill_default_targets,
+)
+from nld.deploy.change_file_models import (
+    BackfillDefaultDirective,
+    PendingChangeFile,
+    backfill_default_outcome_key,
+)
+from nld.deploy.change_log_manager import (
+    DeploymentChangeLogManager,
+)
 from nld.exceptions import NldRuntimeException
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
-from nld.pydantic.namespace import NldNamespace
-from nld.structure.deploy.structure_deploy_manager import StructureDeployManager
-from nld.structure.deploy.structure_deploy_manifest import (
+from nld.pydantic.namespace import NldNamespace, build_entity_key
+from nld.service import EntityTypeNames
+from nld.structure.deploy.deploy_target_factory import StructureDeployTargetFactory
+from nld.structure.deploy.structure_change import (
+    StructureChangeEntry,
     StructureDeployAction,
-    StructureDeployManifest,
-    StructureDeployManifestEntry,
 )
+from nld.structure.deploy.structure_deploy_manager import StructureDeployManager
 from nld.structure.deploy.structure_diff import DiffAction, StructureDiff
 from nld.structure.deploy.structure_metadata_backend_manager import (
     StructureMetadataBackendManager,
 )
+from nld.structure.deploy.structure_metadata_models import StructureDeployRunRow
 from nld.structure.structure.structure import NamespacedStructure, Structure
 from nld.task.base import StandardTask
 from nld.utils import resolve_variables
-from nld.utils.yaml_util import load_yaml_file_into_dict
+from nld.utils.datetime_util import get_current_datetime
 
 
 class StructureDeployExecutor(StandardTask):
-    """Executes structure deployment either from a manifest or inline.
+    """Deploys the in-scope structures to match their asset definitions.
 
-    Supports two modes:
-    - from_plan=True: reads a previously generated manifest and deploys
-      the structures listed in it.
-    - from_plan=False (default): computes diffs and deploys inline,
-      replicating the original StructureDeployTask behavior.
+    The diff is always recomputed against the live target at run
+    time. With ``preview=True`` the computed diff and DDL are printed
+    and nothing is executed or recorded.
+
+    A change needing dependent views dropped is refused (only ``nld
+    flow deploy`` can recreate them by re-executing their VIEW
+    flows), except with ``adopt=True``: reconciling a live database
+    must not be blocked by its own views, so they are dropped without
+    re-execution and the next flow deploy recreates them.
+
+    Failure contract (shared with ``nld flow deploy``): a failing
+    structure is recorded and the run continues with the independent
+    rest; structures depending on the failure (a name a failed rename
+    target never freed) are skipped; the run ends with a
+    partial/failed status — recorded on the run-level record — and a
+    summary error.
     """
 
     init_params: ClassVar[list[str | ExecutionParameterDefinition]] = [
         ExecutionParameterDefinition(
-            name="from_plan",
+            name="adopt",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
-            name="manifest_path",
+            name="allow_drift",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
@@ -50,202 +80,51 @@ class StructureDeployExecutor(StandardTask):
             name="namespace",
             mandatory=False,
         ),
+        ExecutionParameterDefinition(
+            name="output",
+            mandatory=False,
+        ),
+        ExecutionParameterDefinition(
+            name="preview",
+            mandatory=False,
+        ),
+        ExecutionParameterDefinition(
+            name="rebuild",
+            mandatory=False,
+        ),
     ]
     run_params: ClassVar[list[str | ExecutionParameterDefinition]] = []
 
     def __init__(
         self,
-        from_plan: bool = False,
-        manifest_path: str | None = None,
+        adopt: bool = False,
+        allow_drift: bool = False,
         name: str | None = None,
         namespace: str | None = None,
+        output: str | None = None,
+        preview: bool = False,
+        rebuild: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._from_plan = from_plan
-        self._manifest_path = manifest_path
+        self._adopt = adopt
+        self._allow_drift = allow_drift
         self._name = name
         self._namespace = namespace
-        self.execution_context.load_entities()
+        self._output = output
+        self._preview = preview
+        self._rebuild = rebuild
+        self._deploy_target_factory: StructureDeployTargetFactory | None = None
+        self._change_log: tuple[DeploymentChangeLogManager, str] | None = None
+        self.execution_context.load_entities(entity_types=[EntityTypeNames.STRUCTURE])
 
-    def run(self, **kwargs: Any) -> bool:
-        """Execute the structure deployment."""
-        if self._from_plan:
-            return self._run_from_plan()
-        return self._run_inline()
+    def run(self, **kwargs: Any) -> bool | list[StructureChangeEntry]:
+        """Deploy or preview the in-scope structures.
 
-    # ------------------------------------------------------------------
-    # Mode A: from plan
-    # ------------------------------------------------------------------
-
-    def _run_from_plan(self) -> bool:
-        """Deploy structures from previously generated manifests."""
-        if self._manifest_path is not None:
-            manifest_paths = [self._manifest_path]
-        else:
-            from nld.structure.deploy.structure_manifest_discovery import (
-                discover_manifests,
-            )
-
-            entities_root = self.execution_context.project.entities_root_folder_path
-            manifest_paths = discover_manifests(
-                entities_root_folder_path=entities_root,
-            )
-
-        if not manifest_paths:
-            self.log_info("No deployment manifests found in .deployments/structures/")
-            return True
-
-        self.log_info(f"Found {len(manifest_paths)} manifest(s) to process")
-
-        for manifest_path in manifest_paths:
-            manifest_data = load_yaml_file_into_dict(
-                file_path=manifest_path,
-            )
-            manifest = StructureDeployManifest(**manifest_data)
-
-            if not self._matches_scope(manifest=manifest):
-                self.log_info(
-                    f"Skipping manifest '{os.path.basename(manifest_path)}' "
-                    f"(scope does not match filters)"
-                )
-                continue
-
-            self.log_info(f"Executing manifest: {os.path.basename(manifest_path)}")
-            self._execute_manifest(manifest=manifest)
-            self.log_info(
-                f"Manifest '{os.path.basename(manifest_path)}' executed successfully"
-            )
-
-        return True
-
-    def _matches_scope(
-        self,
-        manifest: StructureDeployManifest,
-    ) -> bool:
-        """Check whether the manifest scope matches the CLI filters.
-
-        When neither --name nor --namespace is provided, all manifests
-        match. Otherwise, the manifest's scope must match the provided
-        filters.
+        A preview returns the structured change entries (optionally
+        written as JSON via ``output``); an apply returns True or
+        raises with a partial/failed summary.
         """
-        if self._name is None and self._namespace is None:
-            return True
-
-        if self._name is not None and manifest.scope.name != self._name:
-            return False
-
-        if self._namespace is not None and manifest.scope.namespace != self._namespace:
-            return False
-
-        return True
-
-    def _execute_manifest(
-        self,
-        manifest: StructureDeployManifest,
-    ) -> None:
-        """Execute a single deployment manifest."""
-        config = self.execution_context.project.structure_config
-
-        for entry in manifest.entries:
-            if entry.action == StructureDeployAction.NONE:
-                self.log_info(
-                    f"Structure '{entry.structure_name}' has no changes, skipping"
-                )
-                continue
-
-            self._deploy_structure_from_entry(
-                entry=entry,
-                config=config,
-            )
-
-    def _deploy_structure_from_entry(
-        self,
-        entry: StructureDeployManifestEntry,
-        config: Any,
-    ) -> None:
-        """Deploy a single structure from a manifest entry.
-
-        Re-validates by computing the actual diff at execute time.
-        The manifest entry guides which structures to deploy.
-        """
-        namespace = entry.namespace
-        mapping = config.get_mapping(namespace=namespace)
-        schema_name = mapping.schema_name
-
-        connector = cast(
-            SQLDataConnector[Any],
-            self.execution_context.get_data_connector(
-                mapping.default_connection_name,
-                open_connection=True,
-            ),
-        )
-
-        # Resolve metadata connector and schema
-        metadata_backend_connector_name = (
-            self.execution_context.project.metadata_backend_connector
-        )
-        if metadata_backend_connector_name is not None:
-            metadata_connector = cast(
-                SQLDataConnector[Any],
-                self.execution_context.get_data_connector(
-                    metadata_backend_connector_name,
-                    open_connection=True,
-                ),
-            )
-            metadata_schema = schema_name
-        else:
-            metadata_connector = connector
-            metadata_schema = schema_name
-
-        metadata_manager = StructureMetadataBackendManager(
-            metadata_connector=metadata_connector,
-        )
-        metadata_manager.ensure_metadata_tables(
-            metadata_schema=metadata_schema,
-        )
-
-        variables = resolve_variables(
-            project_variables=self.execution_context.project.variables,
-        )
-        deploy_manager = StructureDeployManager(
-            structure_connector=connector,
-            deploy_schema=schema_name,
-            metadata_backend_connector=metadata_connector,
-            metadata_schema=metadata_schema,
-            variables=variables,
-        )
-
-        # Resolve the structure from the entity registry
-        entity_registry = self.execution_context.entity_registry
-        namespaced_structure = entity_registry.get_structure(
-            entity_key=entry.structure_name,
-            namespace=namespace,
-        )
-
-        try:
-            result = deploy_manager.deploy(
-                namespaced_structure=namespaced_structure,
-            )
-        except Exception as ex:
-            msg = f"Error deploying structure '{entry.structure_name}': {ex}"
-            raise NldRuntimeException(msg) from ex
-
-        if result.deployed:
-            summary = self._build_deploy_summary(
-                structure=namespaced_structure.model,
-                diff=result.diff,
-            )
-            self.log_info(summary)
-        else:
-            self.log_info(f"Structure '{entry.structure_name}' is in sync")
-
-    # ------------------------------------------------------------------
-    # Mode B: inline execution
-    # ------------------------------------------------------------------
-
-    def _run_inline(self) -> bool:
-        """Compute diffs and deploy inline without a manifest."""
         resolved_namespace = self._resolve_namespace(
             namespace=self._namespace,
             structure_name=self._name,
@@ -256,62 +135,128 @@ class StructureDeployExecutor(StandardTask):
             structure_name=self._name,
         )
 
-        config = self.execution_context.project.structure_config
-        mapping = config.get_mapping(namespace=resolved_namespace)
-        schema_name = mapping.schema_name
+        pending_change_files = self._load_pending_change_files()
+        renames_by_structure = group_field_renames_by_structure(
+            pending_change_files=pending_change_files,
+        )
+        structure_renames_by_target = group_structure_renames_by_target(
+            pending_change_files=pending_change_files,
+        )
+        structure_renames_by_source = group_structure_renames_by_source(
+            pending_change_files=pending_change_files,
+        )
+        backfill_defaults_by_structure = group_backfill_defaults_by_structure(
+            pending_change_files=pending_change_files,
+        )
+        self._validate_backfill_default_targets(
+            backfill_defaults_by_structure=backfill_defaults_by_structure,
+        )
+        directive_outcomes: dict[str, str] = {}
 
-        sql_connector = cast(
-            SQLDataConnector[Any],
-            self.execution_context.get_data_connector(
-                mapping.default_connection_name,
-                open_connection=True,
-            ),
+        # Rename targets deploy first: a declared rename frees its old
+        # name before any new structure reclaiming that name deploys.
+        ordered_structures = self._order_rename_targets_first(
+            structures_to_deploy=structures_to_deploy,
+            structure_renames_by_target=structure_renames_by_target,
         )
 
-        # Resolve metadata connector and schema
-        metadata_backend_connector_name = (
-            self.execution_context.project.metadata_backend_connector
-        )
-        if metadata_backend_connector_name is not None:
-            metadata_connector = cast(
-                SQLDataConnector[Any],
-                self.execution_context.get_data_connector(
-                    metadata_backend_connector_name,
-                    open_connection=True,
-                ),
+        deployment_id = str(uuid.uuid4())
+        started_at = get_current_datetime()
+        failed: dict[str, str] = {}
+        skipped: dict[str, str] = {}
+        succeeded_count = 0
+        preview_entries: list[StructureChangeEntry] = []
+        if not self._preview:
+            self._start_run_record(
+                deployment_id=deployment_id,
+                started_at=started_at,
+                structures_total=len(ordered_structures),
             )
-            metadata_schema = schema_name
-        else:
-            metadata_connector = sql_connector
-            metadata_schema = schema_name
 
-        metadata_manager = StructureMetadataBackendManager(
-            metadata_connector=metadata_connector,
-        )
-        metadata_manager.ensure_metadata_tables(
-            metadata_schema=metadata_schema,
-        )
+        for namespaced_structure in ordered_structures:
+            # The mapping (connection, schema) is resolved per
+            # structure: entries collected with children search
+            # direction can come from child namespaces whose mapping
+            # differs from the run's resolved namespace.
+            deploy_manager = self._get_deploy_manager(
+                namespace=namespaced_structure.namespace,
+            )
+            structure_full_name = self._build_structure_full_name(
+                namespaced_structure=namespaced_structure,
+            )
+            pending_field_renames = renames_by_structure.get(
+                structure_full_name,
+                [],
+            )
+            pending_structure_renames = structure_renames_by_target.get(
+                structure_full_name,
+                [],
+            )
+            pending_claiming_renames = [
+                directive
+                for directive in structure_renames_by_source.get(
+                    structure_full_name,
+                    [],
+                )
+                if directive.to != structure_full_name
+            ]
+            pending_backfill_defaults = backfill_defaults_by_structure.get(
+                structure_full_name,
+                [],
+            )
+            if self._preview:
+                preview_entry = self._preview_structure(
+                    deploy_manager=deploy_manager,
+                    namespaced_structure=namespaced_structure,
+                    pending_field_renames=pending_field_renames,
+                    pending_structure_renames=pending_structure_renames,
+                    pending_claiming_renames=pending_claiming_renames,
+                    pending_backfill_defaults=pending_backfill_defaults,
+                )
+                if preview_entry is not None:
+                    preview_entries.append(preview_entry)
+                continue
 
-        variables = resolve_variables(
-            project_variables=self.execution_context.project.variables,
-        )
-        deploy_manager = StructureDeployManager(
-            structure_connector=sql_connector,
-            deploy_schema=schema_name,
-            metadata_backend_connector=metadata_connector,
-            metadata_schema=metadata_schema,
-            variables=variables,
-        )
+            # A structure reclaiming a name that a failed rename
+            # target never freed must not deploy — it would ALTER a
+            # table it does not own.
+            blocking_targets = [
+                directive.to
+                for directive in pending_claiming_renames
+                if directive.to in failed
+            ]
+            if blocking_targets:
+                reason = f"rename target failed: {', '.join(blocking_targets)}"
+                skipped[structure_full_name] = reason
+                self.log_error(
+                    f"Skipping structure '{structure_full_name}': {reason}",
+                )
+                continue
 
-        for namespaced_structure in structures_to_deploy:
             try:
                 result = deploy_manager.deploy(
                     namespaced_structure=namespaced_structure,
+                    adopt=self._adopt,
+                    allow_dependent_view_drops=self._adopt,
+                    allow_drift=self._allow_drift,
+                    pending_field_renames=pending_field_renames,
+                    pending_structure_renames=pending_structure_renames,
+                    pending_claiming_renames=pending_claiming_renames,
+                    pending_backfill_defaults=pending_backfill_defaults,
+                    rebuild=self._rebuild,
                 )
             except Exception as ex:
-                structure_name = namespaced_structure.model.name
-                msg = f"Error deploying structure '{structure_name}': {ex}"
-                raise NldRuntimeException(msg) from ex
+                # Per-structure failure semantics, like nld flow
+                # deploy: record, continue with the independent rest,
+                # end the run partial/failed.
+                self.log_error(
+                    f"Error deploying structure '{structure_full_name}': {ex}",
+                )
+                failed[structure_full_name] = str(ex)
+                continue
+
+            succeeded_count += 1
+            directive_outcomes.update(result.rename_outcomes)
 
             if result.deployed:
                 summary = self._build_deploy_summary(
@@ -324,11 +269,412 @@ class StructureDeployExecutor(StandardTask):
                     f"Structure '{namespaced_structure.model.name}' is in sync"
                 )
 
+        if self._preview:
+            if preview_entries:
+                self.log_info(
+                    f"[PREVIEW] {len(preview_entries)} of "
+                    f"{len(ordered_structures)} structure(s) with pending "
+                    "changes",
+                )
+            else:
+                self.log_info("[PREVIEW] No changes detected — empty change set")
+            self._write_preview_output(preview_entries=preview_entries)
+            # The structured change entries are the preview's return
+            # value: the CLI exits with a distinct code when any are
+            # pending, and CI gates consume them without scraping
+            # log lines.
+            return preview_entries
+
+        self._record_applied_change_files(
+            pending_change_files=pending_change_files,
+            directive_outcomes=directive_outcomes,
+            deployment_id=deployment_id,
+        )
+        status = self._compute_run_status(
+            failed_count=len(failed),
+            succeeded_count=succeeded_count,
+        )
+        self._finalize_run_record(
+            deployment_id=deployment_id,
+            started_at=started_at,
+            status=status,
+            structures_total=len(ordered_structures),
+            structures_in_success=succeeded_count,
+            structures_in_error=len(failed),
+            structures_skipped=len(skipped),
+        )
+        if failed:
+            failures = "; ".join(f"{name}: {error}" for name, error in failed.items())
+            raise NldRuntimeException(
+                f"Structure deploy ended '{status}' — "
+                f"{len(failed)} of {len(ordered_structures)} structure(s) "
+                f"failed ({len(skipped)} skipped): {failures}",
+            )
+
         return True
+
+    # ------------------------------------------------------------------
+    # Preview
+    # ------------------------------------------------------------------
+
+    def _preview_structure(
+        self,
+        deploy_manager: StructureDeployManager,
+        namespaced_structure: NamespacedStructure,
+        pending_field_renames: list[Any],
+        pending_structure_renames: list[Any],
+        pending_claiming_renames: list[Any],
+        pending_backfill_defaults: list[BackfillDefaultDirective] | None = None,
+    ) -> StructureChangeEntry | None:
+        """Print the computed diff and DDL for one structure, execute nothing.
+
+        The namespace and drift flags match the apply call exactly:
+        preview must refuse on the same drift the apply would refuse
+        on — a preview that hides a refusal is not a final review
+        step. Returns the structured change entry, or None when the
+        structure is in sync.
+        """
+        pending_backfill_defaults = pending_backfill_defaults or []
+        structure = namespaced_structure.model
+        change_set = deploy_manager.compute_change_set(
+            structure=structure,
+            allow_drift=self._allow_drift or self._adopt,
+            namespace=namespaced_structure.namespace,
+            pending_field_renames=pending_field_renames,
+            pending_structure_renames=pending_structure_renames,
+            pending_claiming_renames=pending_claiming_renames,
+            pending_backfill_defaults=pending_backfill_defaults,
+        )
+        if (
+            not change_set.diff.has_changes()
+            and not change_set.statements
+            and not pending_backfill_defaults
+        ):
+            return None
+
+        summary = self._build_deploy_summary(
+            structure=structure,
+            diff=change_set.diff,
+        )
+        self.log_info(f"[PREVIEW] {summary}")
+        for outcome_key, outcome in change_set.rename_outcomes.items():
+            self.log_info(f"[PREVIEW] Pending directive {outcome_key}: {outcome}")
+        for directive in pending_backfill_defaults:
+            outcome_key = backfill_default_outcome_key(directive=directive)
+            self.log_info(
+                f"[PREVIEW] Pending directive {outcome_key}: "
+                "would apply one-shot default fill",
+            )
+        for statement in change_set.statements:
+            self.log_info(f"[PREVIEW] Would execute: {statement.sql}")
+
+        if change_set.diff.is_new_table():
+            action = StructureDeployAction.CREATE
+        elif change_set.rebuild_required:
+            action = StructureDeployAction.REBUILD
+        elif change_set.diff.has_changes() or change_set.statements:
+            action = StructureDeployAction.ALTER
+        else:
+            action = StructureDeployAction.NONE
+        return StructureChangeEntry(
+            action=action,
+            characterisation_diffs=change_set.diff.characterisation_diffs,
+            ddl_statements=[statement.sql for statement in change_set.statements],
+            dependent_views=change_set.dependent_views,
+            field_diffs=change_set.diff.field_diffs,
+            namespace=namespaced_structure.namespace,
+            structure_name=structure.name,
+        )
+
+    def _write_preview_output(
+        self,
+        preview_entries: list[StructureChangeEntry],
+    ) -> None:
+        """Write the previewed change entries as JSON when requested."""
+        if self._output is None:
+            return
+        payload = [entry.to_dict(exclude_defaults=False) for entry in preview_entries]
+        with open(self._output, "w", encoding="utf-8") as output_file:
+            json.dump(payload, output_file, indent=2, default=str)
+        self.log_info(f"Preview change entries written to {self._output}")
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
+
+    def _get_deploy_manager(
+        self,
+        namespace: str,
+    ) -> StructureDeployManager:
+        """Return the deploy manager for a structure's namespace mapping.
+
+        One manager (and one schema-wide prefetch) is built per
+        resolved (connection, schema) pair and reused across the
+        structures that share it.
+        """
+        config = self.execution_context.project.structure_config
+        mapping = config.get_mapping(namespace=namespace)
+        if self._deploy_target_factory is None:
+            self._deploy_target_factory = self._build_deploy_target_factory()
+        return self._deploy_target_factory.get_manager(
+            connection_name=mapping.default_connection_name,
+            schema_name=mapping.schema_name,
+        )
+
+    def _build_deploy_target_factory(self) -> StructureDeployTargetFactory:
+        """Build the run's shared per-(connection, schema) manager factory.
+
+        Without a configured metadata backend connector each target
+        keeps its metadata on its own connector, in the deploy schema
+        itself.
+        """
+        metadata_backend_connector_name = (
+            self.execution_context.project.metadata_backend_connector
+        )
+        metadata_connector: SQLDataConnector[Any] | None = None
+        if metadata_backend_connector_name is not None:
+            metadata_connector = cast(
+                SQLDataConnector[Any],
+                self.execution_context.get_data_connector(
+                    metadata_backend_connector_name,
+                    open_connection=True,
+                ),
+            )
+        return StructureDeployTargetFactory(
+            connector_resolver=self._resolve_sql_connector,
+            metadata_connector=metadata_connector,
+            variables=resolve_variables(
+                project_variables=self.execution_context.project.variables,
+            ),
+        )
+
+    def _resolve_sql_connector(
+        self,
+        connection_name: str,
+    ) -> SQLDataConnector[Any]:
+        """Open (or reuse) a named SQL connector from the execution context."""
+        return cast(
+            SQLDataConnector[Any],
+            self.execution_context.get_data_connector(
+                connection_name,
+                open_connection=True,
+            ),
+        )
+
+    def _validate_backfill_default_targets(
+        self,
+        backfill_defaults_by_structure: dict[str, list[BackfillDefaultDirective]],
+    ) -> None:
+        """Refuse a backfill_default directive that targets a view."""
+        if not backfill_defaults_by_structure:
+            return
+        validate_backfill_default_targets(
+            backfill_defaults_by_structure=backfill_defaults_by_structure,
+            entity_registry=self.execution_context.entity_registry,
+        )
+
+    def _resolve_change_log(self) -> tuple[DeploymentChangeLogManager, str]:
+        """Resolve the applied-log manager and its schema, once per run.
+
+        The applied-log lives on the metadata backend connector's
+        active schema so both the flow and the structure deploy paths
+        share one exactly-once log per target. Resolved once — the
+        load and record phases of one run must not each re-open the
+        connector and re-ensure the table.
+        """
+        if self._change_log is not None:
+            return self._change_log
+        metadata_backend_connector_name = (
+            self.execution_context.project.metadata_backend_connector
+        )
+        if metadata_backend_connector_name is None:
+            raise NldRuntimeException(
+                "metadata_backend_connector must be set in the project "
+                "configuration to use deployment change files.",
+            )
+        metadata_connector = cast(
+            SQLDataConnector[Any],
+            self.execution_context.get_data_connector(
+                metadata_backend_connector_name,
+                open_connection=True,
+            ),
+        )
+        change_log_schema = metadata_connector.get_active_schema()
+        if change_log_schema is None:
+            raise NldRuntimeException(
+                "metadata_backend_connector must have a schema configured "
+                "to host the deployment change applied-log.",
+            )
+        change_log_manager = DeploymentChangeLogManager(
+            connector=metadata_connector,
+        )
+        change_log_manager.ensure_table(
+            metadata_schema=change_log_schema,
+        )
+        self._change_log = (change_log_manager, change_log_schema)
+        return self._change_log
+
+    def _load_pending_change_files(self) -> list[PendingChangeFile]:
+        """Load the pending deployment change files for this target."""
+        change_log_manager, change_log_schema = self._resolve_change_log()
+        pending = resolve_pending_change_files(
+            project_root_folder_path=(
+                self.execution_context.project.entities_root_folder_path
+            ),
+            applied_hashes_by_change_id=change_log_manager.get_applied_hashes(
+                metadata_schema=change_log_schema,
+            ),
+        )
+        if pending:
+            pending_ids = ", ".join(change.change_id for change in pending)
+            self.log_info(f"Pending deployment change file(s): {pending_ids}")
+        return pending
+
+    def _start_run_record(
+        self,
+        deployment_id: str,
+        started_at: Any,
+        structures_total: int,
+    ) -> None:
+        """Insert the run-level record at the start of an apply run.
+
+        Recorded on the project's metadata backend connector; a
+        project without one keeps per-target metadata only and has no
+        run-level record to write to.
+        """
+        run_target = self._resolve_run_record_target()
+        if run_target is None:
+            return
+        metadata_manager, metadata_schema = run_target
+        metadata_manager.ensure_deploy_run_table(metadata_schema=metadata_schema)
+        metadata_manager.insert_deploy_run(
+            metadata_schema=metadata_schema,
+            row=StructureDeployRunRow(
+                deployment_id=deployment_id,
+                started_at=started_at,
+                structures_total=structures_total,
+            ),
+        )
+
+    def _finalize_run_record(
+        self,
+        deployment_id: str,
+        started_at: Any,
+        status: str,
+        structures_total: int,
+        structures_in_success: int,
+        structures_in_error: int,
+        structures_skipped: int,
+    ) -> None:
+        """Write the run's final status and counters."""
+        run_target = self._resolve_run_record_target()
+        if run_target is None:
+            return
+        metadata_manager, metadata_schema = run_target
+        metadata_manager.update_deploy_run(
+            metadata_schema=metadata_schema,
+            row=StructureDeployRunRow(
+                deployment_id=deployment_id,
+                started_at=started_at,
+                completed_at=get_current_datetime(),
+                status=status,
+                structures_total=structures_total,
+                structures_in_success=structures_in_success,
+                structures_in_error=structures_in_error,
+                structures_skipped=structures_skipped,
+            ),
+        )
+
+    def _resolve_run_record_target(
+        self,
+    ) -> tuple[StructureMetadataBackendManager, str] | None:
+        """Resolve where run-level records live, when the project has one."""
+        metadata_backend_connector_name = (
+            self.execution_context.project.metadata_backend_connector
+        )
+        if metadata_backend_connector_name is None:
+            return None
+        metadata_connector = cast(
+            SQLDataConnector[Any],
+            self.execution_context.get_data_connector(
+                metadata_backend_connector_name,
+                open_connection=True,
+            ),
+        )
+        metadata_schema = metadata_connector.get_active_schema()
+        if metadata_schema is None:
+            return None
+        return (
+            StructureMetadataBackendManager(metadata_connector=metadata_connector),
+            metadata_schema,
+        )
+
+    @staticmethod
+    def _compute_run_status(
+        failed_count: int,
+        succeeded_count: int,
+    ) -> str:
+        """Compute the run status with the flow-deploy semantics."""
+        if failed_count > 0 and succeeded_count > 0:
+            return "partial"
+        if failed_count > 0:
+            return "failed"
+        return "success"
+
+    def _record_applied_change_files(
+        self,
+        pending_change_files: list[PendingChangeFile],
+        directive_outcomes: dict[str, str],
+        deployment_id: str,
+    ) -> None:
+        """Record fully-applied change files in the backend applied-log.
+
+        A change file is recorded only when every one of its
+        directives resolved in this run — a scoped deploy leaves the
+        files with out-of-scope directives pending for a later run.
+        """
+        if not pending_change_files:
+            return
+        change_log_manager, change_log_schema = self._resolve_change_log()
+
+        change_log_manager.record_fully_applied(
+            metadata_schema=change_log_schema,
+            pending_change_files=pending_change_files,
+            directive_outcomes=directive_outcomes,
+            deployment_id=deployment_id,
+        )
+
+    def _order_rename_targets_first(
+        self,
+        structures_to_deploy: list[NamespacedStructure],
+        structure_renames_by_target: dict[str, Any],
+    ) -> list[NamespacedStructure]:
+        """Move the targets of pending declared renames to the front.
+
+        A rename target frees its old table name when it deploys;
+        any structure reclaiming that name must come after it.
+        """
+        rename_targets: list[NamespacedStructure] = []
+        others: list[NamespacedStructure] = []
+        for namespaced_structure in structures_to_deploy:
+            full_name = self._build_structure_full_name(
+                namespaced_structure=namespaced_structure,
+            )
+            if full_name in structure_renames_by_target:
+                rename_targets.append(namespaced_structure)
+            else:
+                others.append(namespaced_structure)
+        return rename_targets + others
+
+    @staticmethod
+    def _build_structure_full_name(
+        namespaced_structure: NamespacedStructure,
+    ) -> str:
+        """Build the namespace-qualified structure name."""
+        return build_entity_key(
+            namespace=namespaced_structure.namespace,
+            entity_name=namespaced_structure.model.name,
+        )
 
     def _resolve_namespace(
         self,
@@ -381,13 +727,13 @@ class StructureDeployExecutor(StandardTask):
             namespace=namespace,
         )
         structures: list[NamespacedStructure] = []
-        for ns in structure_dict.values():
+        for namespaced_structure in structure_dict.values():
             if (
-                ns.model.is_table()
-                and not ns.model.is_external_source()
-                and not ns.model.is_managed_by_flow_execution()
+                namespaced_structure.model.is_table()
+                and not namespaced_structure.model.is_external_source()
+                and not namespaced_structure.model.is_managed_by_flow_execution()
             ):
-                structures.append(ns)
+                structures.append(namespaced_structure)
         return structures
 
     def _build_deploy_summary(

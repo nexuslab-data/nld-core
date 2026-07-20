@@ -100,6 +100,15 @@ class SnowflakeConnectionWrapper(
                 )
                 connect_params["private_key"] = private_key
 
+            elif (
+                self.credentials.authenticator
+                == SnowflakeAuthenticator.PROGRAMMATIC_ACCESS_TOKEN.value
+            ):
+                self.log_info("Using programmatic access token (PAT) authentication")
+                if self.credentials.token is None:
+                    raise ValueError("token is required for PAT auth")
+                connect_params["token"] = self.credentials.token
+
             else:
                 raise ValueError(
                     f"Unsupported authenticator: {self.credentials.authenticator}"

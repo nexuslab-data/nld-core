@@ -73,10 +73,12 @@ def find_by_synonym(
     synonym: str,
     namespace: str | None = None,
 ) -> Term | None:
-    """Find a term by matching one of its synonyms or its canonical name.
+    """Find a term by matching its canonical name or synonyms.
 
-    Walks the namespace hierarchy from the given namespace up to root and
-    returns the first match found, so namespace overrides win over general.
+    Matching also covers translations (each translation's name and synonyms), so
+    a term can be resolved from any of its languages. Walks the namespace
+    hierarchy from the given namespace up to root and returns the first match
+    found, so namespace overrides win over general.
     """
     normalized = synonym.lower()
     for _, dictionary in _get_dictionaries_in_hierarchy(
@@ -84,11 +86,34 @@ def find_by_synonym(
         namespace=namespace,
     ):
         for term in dictionary.terms.values():
-            if term.name.lower() == normalized:
-                return term
-            if any(candidate.lower() == normalized for candidate in term.synonyms):
+            if _matches_name(term, normalized) or _matches_synonym(term, normalized):
                 return term
     return None
+
+
+def _matches_name(term: Term, normalized: str) -> bool:
+    """Whether the query matches the term's name or plural, in any language."""
+    if term.name.lower() == normalized:
+        return True
+    if term.plural is not None and term.plural.lower() == normalized:
+        return True
+    for tr in term.translations:
+        if tr.name.lower() == normalized:
+            return True
+        if tr.plural is not None and tr.plural.lower() == normalized:
+            return True
+    return False
+
+
+def _matches_synonym(term: Term, normalized: str) -> bool:
+    """Whether the query matches a synonym of the term in any language."""
+    if any(candidate.lower() == normalized for candidate in term.synonyms):
+        return True
+    return any(
+        candidate.lower() == normalized
+        for tr in term.translations
+        for candidate in tr.synonyms
+    )
 
 
 def find_terms(
@@ -103,7 +128,9 @@ def find_terms(
 
     The scope flags control which Term fields participate in the match:
     canonical `name`, `synonyms`, and/or `related_terms`. Matching is a
-    case-insensitive exact string equality against each enabled field.
+    case-insensitive exact string equality against each enabled field, and
+    covers translations too (translation names count as `name`, translation
+    synonyms as `synonym`).
 
     When the same term name appears in multiple namespaces the deepest
     (most specific) definition wins, preserving the `parents` override
@@ -122,11 +149,9 @@ def find_terms(
                 continue
 
             matched_on: MatchedOn | None = None
-            if match_name and term.name.lower() == normalized:
+            if match_name and _matches_name(term, normalized):
                 matched_on = "name"
-            elif match_synonym and any(
-                candidate.lower() == normalized for candidate in term.synonyms
-            ):
+            elif match_synonym and _matches_synonym(term, normalized):
                 matched_on = "synonym"
             elif match_related and any(
                 candidate.lower() == normalized for candidate in term.related_terms

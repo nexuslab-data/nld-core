@@ -12,13 +12,14 @@ from nld.flow.incremental.impl.by_key.backend.base_with_pydantic import (
     ByKeyStateBackendManager,
 )
 from nld.flow.incremental.impl.by_key.state import (
+    ByKeyPlannedProcessingDetailledState,
     ByKeyProcessingState,
+    ByKeySingleKeyPlannedProcessingDetailledState,
     ByKeySingleKeyProcessingState,
     ByKeySingleKeyState,
     ByKeyState,
 )
 from nld.flow.incremental.models import (
-    FlowProcessingState,
     IncrementalProcessingStatus,
     IncrementalStateStatus,
 )
@@ -136,22 +137,8 @@ class ByKeyPlannedProcessingStateRow(NldBaseModel):
     flow_namespace: str
     flow_name: str
     strategy: str | None = None
-    processing_status: str | None = None
-    process_error_message: str | None = None
-    processing_completed_at: datetime.datetime | None = None
+    planned_processing_status: str | None = None
     parameters: dict[str, Any] | None = None
-
-    @field_validator(
-        "processing_completed_at",
-        mode="before",
-    )
-    @classmethod
-    def normalize_utc_timezone(
-        cls,
-        value: datetime.datetime | None,
-    ) -> datetime.datetime | None:
-        """Normalize naive or non-UTC datetimes from DB to UTC-aware."""
-        return normalize_to_utc(value)
 
 
 class PostgreSQLByKeyStateBackendManager(
@@ -475,23 +462,20 @@ class PostgreSQLByKeyStateBackendManager(
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        processing_state: FlowProcessingState,
+        detailled_state: ByKeyPlannedProcessingDetailledState,
     ) -> None:
         """Persist the per-key planned-state rows for a new PLANNED plan."""
-        by_key_state = cast(ByKeyProcessingState, processing_state)
         rows = [
             ByKeyPlannedProcessingStateRow(
                 plan_state_uid=plan_state_uid,
-                key_name=key_state.name,
+                key_name=key_detail.name,
                 flow_namespace=self.flow_namespace,
                 flow_name=self.flow_name,
-                strategy=by_key_state.strategy,
-                processing_status=key_state.processing_status,
-                process_error_message=key_state.process_error_message,
-                processing_completed_at=key_state.processing_completed_at,
-                parameters=key_state.parameters,
+                strategy=detailled_state.strategy,
+                planned_processing_status=key_detail.planned_processing_status,
+                parameters=key_detail.parameters,
             )
-            for key_state in by_key_state.keys.values()
+            for key_detail in detailled_state.keys.values()
         ]
         if not rows:
             return
@@ -507,8 +491,8 @@ class PostgreSQLByKeyStateBackendManager(
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> ByKeyProcessingState | None:
-        """Reconstruct the by_key processing state from its rows."""
+    ) -> ByKeyPlannedProcessingDetailledState | None:
+        """Reconstruct the by_key planned detail from its rows."""
         rows = cast(
             list[ByKeyPlannedProcessingStateRow],
             self.pydantic_manager.read_models(
@@ -520,19 +504,18 @@ class PostgreSQLByKeyStateBackendManager(
         )
         if not rows:
             return None
-        keys: dict[str, ByKeySingleKeyProcessingState] = {}
+        keys: dict[str, ByKeySingleKeyPlannedProcessingDetailledState] = {}
         for row in rows:
-            keys[row.key_name] = ByKeySingleKeyProcessingState(
+            keys[row.key_name] = ByKeySingleKeyPlannedProcessingDetailledState(
                 name=row.key_name,
-                processing_status=(
-                    row.processing_status or IncrementalProcessingStatus.TO_BE_PROCESSED
+                planned_processing_status=(
+                    row.planned_processing_status
+                    or IncrementalProcessingStatus.TO_BE_PROCESSED
                 ),
-                process_error_message=row.process_error_message,
-                processing_completed_at=row.processing_completed_at,
                 parameters=row.parameters,
             )
-        return ByKeyProcessingState(
-            flow_uid=plan_state_uid,
+        return ByKeyPlannedProcessingDetailledState(
+            plan_state_uid=plan_state_uid,
             strategy=rows[0].strategy or "",
             keys=keys,
         )

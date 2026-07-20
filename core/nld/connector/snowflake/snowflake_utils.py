@@ -9,9 +9,10 @@ from nld.structure import (
 from snowflake.connector.cursor import ResultMetadata
 from snowflake.connector.errors import ProgrammingError as SnowflakeProgrammingError
 
-from .snowflake_data_type import (
+from .connector_definition import (
     SnowflakeDataTypes,
 )
+from .snowflake_structure import SnowflakeStructure
 
 SNOWFLAKE_MAX_TEXT_LENGTH: Final[int] = 16777216
 
@@ -60,10 +61,11 @@ class SnowflakeUtil:
         cls,
         result_metadata_list: list[ResultMetadata],
     ) -> Structure:
-        structure = Structure(
+        structure = SnowflakeStructure(
             name="ResultSet",
             description=None,
             structure_type="PyDataSet",
+            connector_type="snowflake",
             stats={"row_count": 0},
         )
         for result_metadata in result_metadata_list:
@@ -74,10 +76,11 @@ class SnowflakeUtil:
 
     @classmethod
     def get_structure_for_error_result(cls) -> Structure:
-        structure = Structure(
+        structure = SnowflakeStructure(
             name="ResultSet",
             description=None,
             structure_type="PyDataSet",
+            connector_type="snowflake",
             stats={"row_count": 0},
             options=None,
             fields={},

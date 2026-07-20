@@ -12,12 +12,9 @@ from nld.flow.incremental.impl.by_source_tst.backend.base_with_pydantic import (
     BySourceTstStateBackendManager,
 )
 from nld.flow.incremental.impl.by_source_tst.state import (
+    BySourceTstPlannedProcessingDetailledState,
     BySourceTstProcessingState,
     BySourceTstState,
-)
-from nld.flow.incremental.models import (
-    FlowProcessingState,
-    IncrementalProcessingStatus,
 )
 from nld.flow.incremental.models.events import (
     IncrementalBackendEngineInitialized,
@@ -121,13 +118,9 @@ class BySourceTstPlannedProcessingStateRow(NldBaseModel):
     flow_name: str
     pull_from_timestamp: datetime.datetime | None = None
     pull_to_timestamp: datetime.datetime | None = None
-    processing_status: str | None = None
-    process_error_message: str | None = None
-    processing_completed_at: datetime.datetime | None = None
     strategy: str
 
     @field_validator(
-        "processing_completed_at",
         "pull_from_timestamp",
         "pull_to_timestamp",
         mode="before",
@@ -333,20 +326,16 @@ class PostgreSQLBySourceTstStateBackendManager(
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        processing_state: FlowProcessingState,
+        detailled_state: BySourceTstPlannedProcessingDetailledState,
     ) -> None:
         """Persist the by_source_tst planned-state row for a new PLANNED plan."""
-        by_tst_state = cast(BySourceTstProcessingState, processing_state)
         row = BySourceTstPlannedProcessingStateRow(
             plan_state_uid=plan_state_uid,
             flow_namespace=self.flow_namespace,
             flow_name=self.flow_name,
-            pull_from_timestamp=by_tst_state.pull_from_timestamp,
-            pull_to_timestamp=by_tst_state.pull_to_timestamp,
-            processing_status=by_tst_state.processing_status,
-            process_error_message=by_tst_state.process_error_message,
-            processing_completed_at=by_tst_state.processing_completed_at,
-            strategy=by_tst_state.strategy,
+            pull_from_timestamp=detailled_state.pull_from_timestamp,
+            pull_to_timestamp=detailled_state.pull_to_timestamp,
+            strategy=detailled_state.strategy,
         )
         self.pydantic_manager.upsert_model(
             model=row,
@@ -360,8 +349,8 @@ class PostgreSQLBySourceTstStateBackendManager(
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> BySourceTstProcessingState | None:
-        """Reconstruct the by_source_tst processing state from its row."""
+    ) -> BySourceTstPlannedProcessingDetailledState | None:
+        """Reconstruct the by_source_tst planned detail from its row."""
         rows = cast(
             list[BySourceTstPlannedProcessingStateRow],
             self.pydantic_manager.read_models(
@@ -374,14 +363,9 @@ class PostgreSQLBySourceTstStateBackendManager(
         if not rows:
             return None
         row = rows[0]
-        return BySourceTstProcessingState(
-            flow_uid=row.plan_state_uid,
+        return BySourceTstPlannedProcessingDetailledState(
+            plan_state_uid=row.plan_state_uid,
             strategy=row.strategy,
             pull_from_timestamp=row.pull_from_timestamp,
             pull_to_timestamp=row.pull_to_timestamp,
-            processing_status=(
-                row.processing_status or IncrementalProcessingStatus.TO_BE_PROCESSED
-            ),
-            process_error_message=row.process_error_message,
-            processing_completed_at=row.processing_completed_at,
         )

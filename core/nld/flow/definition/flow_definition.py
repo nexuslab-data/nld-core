@@ -4,10 +4,15 @@ from typing import TYPE_CHECKING, Any
 from pydantic import Field as PydanticField
 from pydantic import field_validator, model_validator
 
+from nld.flow.config import (
+    ConnectorConfig,
+    StateBackendConnectorConfigWrapper,
+    coerce_connector_config,
+)
 from nld.flow.definition.field_lineage import FieldLineage
 from nld.flow.definition.sql_config import SQLConfig
 from nld.flow.incremental.models import FlowIncrementalLogic, IncrementalConfig
-from nld.flow.state.config import StateBackendConnectorConfigWrapper
+from nld.misc import EnvironmentVariableDefinition
 from nld.parameters import ExecutionParameter, create_model_dict
 from nld.pydantic import (
     NldBaseModel,
@@ -106,7 +111,8 @@ class DataFlowDefinition(NldNamedBaseModel):
     task: str | None = None
     task_type: str | None = None
     state_backend_connector: StateBackendConnectorConfigWrapper | None = None
-    data_connectors: dict[str, str] | None = None
+    data_connectors: dict[str, ConnectorConfig] | None = None
+    variables: list[EnvironmentVariableDefinition] | None = None
     incremental: IncrementalConfig | None = None
     params: list[ExecutionParameter] | None = None
     predecessors: dict[str, DataFlowStructurePredecessor] = PydanticField(
@@ -155,6 +161,49 @@ class DataFlowDefinition(NldNamedBaseModel):
                 for key, param_value in value.items()
             ]
         return value
+
+    @field_validator("variables", mode="before")
+    @classmethod
+    def normalize_variables(
+        cls,
+        value: dict[str, Any] | list[Any] | None,
+    ) -> list[dict[str, Any]] | None:
+        """Normalize the shorthand forms of ``variables``.
+
+        Accepts, in addition to the canonical list of dicts:
+        - a bare string item (just the variable name), and
+        - a mapping ``{NAME: {attrs}}`` or ``{NAME: null}`` (name keyed).
+        """
+        if value is None:
+            return value
+        if isinstance(value, dict):
+            return [{"name": name, **(attrs or {})} for name, attrs in value.items()]
+        return [{"name": item} if isinstance(item, str) else item for item in value]
+
+    @field_validator("data_connectors", mode="before")
+    @classmethod
+    def coerce_data_connectors(
+        cls,
+        value: Any,
+    ) -> Any:
+        """Coerce each ``data_connectors`` entry into a ``ConnectorConfig``.
+
+        A bare connection-name string is the common case and is promoted to
+        ``{connector: <name>}``; a mapping value is passed through so a flow
+        can pin a profile per connection::
+
+            data_connectors:
+              source_connector: my_lake                # name only
+              target_connector:
+                connector: my_warehouse
+                profile_name: staging
+        """
+        if not isinstance(value, dict):
+            return value
+        return {
+            connector_name: coerce_connector_config(connector_value)
+            for connector_name, connector_value in value.items()
+        }
 
     @field_validator("state_backend_connector", mode="before")
     @classmethod
@@ -210,6 +259,10 @@ class DataFlowDefinition(NldNamedBaseModel):
         )
         return self._resolved_target_structure
 
+    def get_variables(self) -> list[EnvironmentVariableDefinition]:
+        """Return the variables declared on this flow."""
+        return self.variables or []
+
     def get_connector_keys(self) -> list[str]:
         keys = (
             list(self.data_connectors.keys())
@@ -225,7 +278,10 @@ class DataFlowDefinition(NldNamedBaseModel):
     def get_connector_connection_names(self) -> set[str]:
         names: set[str] = set()
         if self.data_connectors is not None:
-            names.update(self.data_connectors.values())
+            names.update(
+                connector_config.connector
+                for connector_config in self.data_connectors.values()
+            )
         if self.state_backend_connector is not None:
             names.add(self.state_backend_connector.primary.connector)
             if self.state_backend_connector.secondary is not None:
@@ -395,10 +451,17 @@ class DataFlowDefinition(NldNamedBaseModel):
             resolved_path = self._resolve_task_module_path(
                 additional_flow_task_types=additional_flow_task_types,
             )
+            # An explicit fully-qualified path (containing a dot) must bind to
+            # exactly what the YAML asked for. Falling back to additional paths
+            # would strip it to a bare class name, hide the real import failure,
+            # and risk silently binding to a same-named class elsewhere.
+            resolved_path_is_fqn = "." in resolved_path
             loader = ModuleLoader(additional_paths=additional_task_paths or [])
             module, task_class = loader.load_class(
                 path_or_class_name=resolved_path,
-                try_to_import_from_additional_paths=bool(additional_task_paths),
+                try_to_import_from_additional_paths=(
+                    bool(additional_task_paths) and not resolved_path_is_fqn
+                ),
             )
             if not issubclass(task_class, DataFlowTask):
                 raise ValueError(

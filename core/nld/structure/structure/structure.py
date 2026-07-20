@@ -21,7 +21,11 @@ from nld.structure.exceptions import (
     NotAvailableFieldException,
 )
 from nld.structure.field import Field
-from nld.structure.field.field_characterisation_def import (
+from nld.structure.field.field_characterisation_catalog import (
+    CharacterisationValidationFinding,
+)
+from nld.structure.field.field_characterisation_definition import (
+    FieldCharacterisationDefinition,
     FieldCharacterisationDefinitionNames,
 )
 from nld.structure.field.field_template import FieldTemplateRelativePosition
@@ -58,6 +62,7 @@ class Structure(NldNamedBaseModel):
     options: dict[str, Any] | None = None
     post_deployment_sql_hook: list[str] | None = None
     pre_deployment_sql_hook: list[str] | None = None
+    enforce_field_order: bool | None = None
     fields: dict[str, Field] = {}
     characterisations: list[StructureCharacterisation] = []
 
@@ -171,6 +176,12 @@ class Structure(NldNamedBaseModel):
     def get_field(self, name: str) -> Field:
         """Get a field based on its name.
 
+        Resolves both the structure's own fields and the fields
+        contributed by its referenced templates, so a name pointing at a
+        template-provided field (e.g. ``ts_src_extracted_at`` from a
+        tracking template) is found. Declared fields take priority over
+        template fields with the same name, matching ``get_all_fields``.
+
         Args:
             name: The field name to look for.
 
@@ -180,14 +191,23 @@ class Structure(NldNamedBaseModel):
         Raises:
             NotAvailableFieldException: If the field is not available.
         """
-        if name in self.fields:
-            return self.fields[name]
+        for field in self.get_all_fields():
+            if field.name == name:
+                return field
         log_event_default(NotAvailableFieldInStructure(self.name, name))
         raise NotAvailableFieldException(structure_name=self.name, field_name=name)
 
     def has_field(self, name: str) -> bool:
-        """Checks if a field with the provided name is available in the structure."""
-        return name in self.fields
+        """Checks if a field with the provided name is available in the structure.
+
+        Considers both the structure's own fields and template-contributed
+        fields, consistently with ``get_field``.
+        """
+        try:
+            self.get_field(name)
+        except NotAvailableFieldException:
+            return False
+        return True
 
     def get_fields_based_on_names(self, field_names: list[str]) -> list[Field]:
         """Get a list of fields based on their names."""
@@ -234,6 +254,24 @@ class Structure(NldNamedBaseModel):
             for field in self.get_all_fields()
             if field.has_characterisation(characterisation)
         ]
+
+    def validate_characterisations(
+        self,
+        catalogue: dict[str, FieldCharacterisationDefinition],
+    ) -> list[CharacterisationValidationFinding]:
+        """Delegate to the independent StructureCharacterisationChecker.
+
+        The actual checking lives in the standalone checker service so the
+        structure stays a pure data object; this is a thin convenience that
+        runs the checker over ``self`` with the provided catalogue.
+        """
+        from nld.structure.service.structure_characterisation_checker import (
+            StructureCharacterisationChecker,
+        )
+
+        return StructureCharacterisationChecker(catalogue=catalogue).check(
+            structure=self,
+        )
 
     def has_field_with_characterisation(self, characterisation: str) -> bool:
         """Check that at least one field has the provided characterisation.
@@ -508,10 +546,13 @@ class Structure(NldNamedBaseModel):
     def get_number_of_fields(self) -> int:
         """Get the number of fields contained in the data structure.
 
+        Counts both the structure's own fields and template-contributed
+        fields, consistently with ``get_all_fields`` and ``get_field``.
+
         Returns:
             The number of fields.
         """
-        return len(self.fields)
+        return len(self.get_all_fields())
 
     # Field Characterisation related methods
     def _get_fields_associated_to_unique_structure_characterisation(
@@ -666,6 +707,35 @@ class Structure(NldNamedBaseModel):
             if tag not in all_tags:
                 all_tags.append(tag)
         return all_tags
+
+    def get_deployable_characterisations(self) -> list[StructureCharacterisation]:
+        """Get the structure characterisations that drive deployment DDL.
+
+        A field-level ``unique`` characterisation expands into a
+        single-column unique constraint named per the engine's
+        default convention (``<table>_<column>_key``), so its DDL and
+        the read-back constraint compare equal on every deploy.
+        """
+        deployable = list(self.characterisations)
+        declared_unique_fields = {
+            field_name
+            for characterisation in self.characterisations
+            for field_name in (characterisation.linked_fields or [])
+            if characterisation.characterisation == "unique"
+        }
+        for field in self.get_all_fields():
+            if not field.has_characterisation("unique"):
+                continue
+            if field.name in declared_unique_fields:
+                continue
+            deployable.append(
+                StructureCharacterisation(
+                    name=f"{self.name}_{field.name}_key",
+                    characterisation="unique",
+                    linked_fields=[field.name],
+                ),
+            )
+        return deployable
 
     def get_all_pre_deployment_sql_hooks(self) -> list[str]:
         """Get pre-deployment SQL hooks, structure overriding templates."""

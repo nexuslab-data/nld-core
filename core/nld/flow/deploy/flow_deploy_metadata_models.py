@@ -17,21 +17,20 @@ class FlowDeploymentFlowChangeRow(NldBaseModel):
     deployment_id: str = Field(json_schema_extra={"primary_key": True})
     flow_name: str = Field(json_schema_extra={"primary_key": True})
     namespace: str = Field(json_schema_extra={"primary_key": True})
-    backfill_status: str
+    status: str
     changed_at: datetime.datetime
     error_message: str | None = None
     flow_history_id: str | None = None
 
 
 class FlowDeploymentRow(NldBaseModel):
-    """One row per manifest execution.
+    """One row per deploy run (one applied change set).
 
     Stored in the ``_nld_flow_deployment`` metadata table.
     """
 
     deployment_id: str = Field(json_schema_extra={"primary_key": True})
-    manifest_id: str
-    manifest_name: str
+    changeset_id: str
     status: str = "running"
     started_at: datetime.datetime
     completed_at: datetime.datetime | None = None
@@ -63,6 +62,7 @@ class FlowDeployHistoryRow(NldBaseModel):
     """
 
     deployment_id: str = Field(json_schema_extra={"primary_key": True})
+    uid: str
     namespace: str
     flow_name: str
     deployed_at: datetime.datetime
@@ -73,8 +73,7 @@ class FlowDeployHistoryRow(NldBaseModel):
     flow_yaml_snapshot: str | None = None
     target_structure_hash: str | None = None
     diff_action: str
-    backfill_strategy: str
-    manifest_deployment_id: str | None = None
+    run_deployment_id: str | None = None
     predecessor_hashes: dict[str, str] | None = None
     previous_deployment_id: str | None = None
 
@@ -89,6 +88,7 @@ class FlowDeployMetadataRow(NldBaseModel):
     namespace: str = Field(json_schema_extra={"primary_key": True})
     flow_name: str = Field(json_schema_extra={"primary_key": True})
     deployment_id: str
+    uid: str
     deployed_at: datetime.datetime
     flow_definition_hash: str
     flow_sql_hash: str | None = None

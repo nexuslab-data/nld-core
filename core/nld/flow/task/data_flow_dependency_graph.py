@@ -9,7 +9,7 @@ from nld.flow.graph import (
     serialize_simplified_nodes,
 )
 from nld.parameters import ExecutionParameterDefinition
-from nld.service import FileOutputService
+from nld.service import EntityTypeNames, FileOutputService
 from nld.task.base import StandardTask
 
 DEPENDENCY_GRAPH_JSON_FILE_NAME = "flow_dependency_graph.json"
@@ -96,7 +96,9 @@ class DataFlowDependencyGraphTask(StandardTask):
         self.override_output_folder_path = override_output_folder_path
         self.structure_name = structure_name
         self.upstream = upstream
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+        )
 
     def run(self, **kwargs: Any) -> bool:
         """Build the dependency graph and output it."""

@@ -37,6 +37,80 @@ class FlowStepExecutionInfo(NldBaseModel):
     files_deleted_in_success: int | None = None
     files_deleted_in_error: int | None = None
 
+    def get_entries_summary(self) -> str | None:
+        """Compact summary of source/target row counts for display.
+
+        Surfaces the per-step entry metrics (rows read from the source,
+        rows inserted/updated/deleted in the target) that are otherwise
+        only available in the JSON output. Only non-null metrics are
+        included; a non-zero error count is appended as ``!<n>`` so a
+        partially failed step stands out. Returns None when the step
+        carries no row-count information (e.g. a pre-processing step).
+        """
+        labelled = [
+            ("src", self.source_entries_in_success, self.source_entries_in_error),
+            (
+                "ins",
+                self.target_entries_inserted_in_success,
+                self.target_entries_inserted_in_error,
+            ),
+            (
+                "upd",
+                self.target_entries_updated_in_success,
+                self.target_entries_updated_in_error,
+            ),
+            (
+                "ldel",
+                self.target_entries_logically_deleted_in_success,
+                self.target_entries_logically_deleted_in_error,
+            ),
+            (
+                "del",
+                self.target_entries_deleted_in_success,
+                self.target_entries_deleted_in_error,
+            ),
+        ]
+        parts = [
+            segment
+            for label, success, error in labelled
+            if (segment := self._format_count_segment(label, success, error))
+        ]
+        return " ".join(parts) if parts else None
+
+    def get_files_summary(self) -> str | None:
+        """Compact summary of file-movement counts for display.
+
+        Mirrors ``get_entries_summary`` for the file metrics (files moved
+        into / deleted from the landing zone). Returns None when the step
+        carries no file information.
+        """
+        labelled = [
+            ("moved", self.files_moved_in_success, self.files_moved_in_error),
+            ("del", self.files_deleted_in_success, self.files_deleted_in_error),
+        ]
+        parts = [
+            segment
+            for label, success, error in labelled
+            if (segment := self._format_count_segment(label, success, error))
+        ]
+        return " ".join(parts) if parts else None
+
+    @staticmethod
+    def _format_count_segment(
+        label: str, success: int | None, error: int | None
+    ) -> str | None:
+        """Format one ``label:<success>[!<error>]`` count segment.
+
+        Returns None when both counts are absent so the segment is dropped
+        from the summary entirely rather than rendered as a zero.
+        """
+        if success is None and error is None:
+            return None
+        segment = f"{label}:{success or 0}"
+        if error:
+            segment += f"!{error}"
+        return segment
+
     def update_execution_status_to_completed(self, with_warning: bool = False) -> None:
         self._update_execution_status_at_completion(
             FlowStepExecStatus.SUCCEEDED
