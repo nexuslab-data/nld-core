@@ -41,3 +41,20 @@ class NldMissingProjectFolder(NldProjectError):
     def __init__(self, folder_name: str, path: str) -> None:
         self.message = f"No {folder_name} found at expected path {path}"
         super().__init__(self.message)
+
+
+class NldEnvironmentError(NldProjectError):
+    CODE = 1120
+    MESSAGE = "NLD Environment Error"
+
+
+class NldUnknownEnvironmentError(NldEnvironmentError):
+    CODE = 1121
+    MESSAGE = "NLD Unknown Environment"
+
+    def __init__(self, environment: str, available: list[str]) -> None:
+        names = ", ".join(available) if available else "<none declared>"
+        self.message = (
+            f"Unknown environment '{environment}'. Available environments: {names}"
+        )
+        super().__init__(self.message)

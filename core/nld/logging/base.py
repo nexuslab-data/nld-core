@@ -10,6 +10,7 @@ class EventLevel(int, Enum):
     WARN = WARNING
     INFO = 20
     DEBUG = 10
+    TRACE = 7
     TEST = 5
 
 
@@ -31,6 +32,11 @@ class BaseEvent:
 class TestEvent(BaseEvent):
     def level(self) -> EventLevel:
         return EventLevel.TEST
+
+
+class TraceEvent(BaseEvent):
+    def level(self) -> EventLevel:
+        return EventLevel.TRACE
 
 
 class DebugEvent(BaseEvent):
@@ -68,6 +74,11 @@ class StandardEvent(BaseEvent):
 class StandardTestEvent(StandardEvent):
     def level(self) -> EventLevel:
         return EventLevel.TEST
+
+
+class StandardTraceEvent(StandardEvent):
+    def level(self) -> EventLevel:
+        return EventLevel.TRACE
 
 
 class StandardDebugEvent(StandardEvent):

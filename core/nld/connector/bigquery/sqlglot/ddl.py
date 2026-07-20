@@ -179,3 +179,17 @@ class BigQuerySqlglotDDLBuilder(BaseSqlglotDDLBuilder):
             f"WHERE table_name = {table_lit} "
             f"AND column_name = {column_lit}"
         )
+
+    def build_column_names_query(
+        self,
+        schema: str,
+        table: str,
+    ) -> str:
+        """Build a BigQuery-compatible column-names listing."""
+        table_lit = exp.convert(table).sql(dialect=self._dialect)
+        return (
+            f"SELECT column_name "
+            f"FROM `{schema}`.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE table_name = {table_lit} "
+            f"ORDER BY ordinal_position"
+        )

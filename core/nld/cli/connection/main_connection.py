@@ -7,6 +7,7 @@ from nld.cli.connection import params_connection
 from nld.connector.task import (
     ConnectionDebugTask,
     ConnectionExportEnvironmentVariablesTask,
+    ConnectionExportQueryCsvTask,
     ConnectionGetStructureTask,
     ConnectionListTask,
 )
@@ -61,6 +62,30 @@ def get_structure(ctx: click.Context, **kwargs: Any) -> bool:
         nld connection get-structure --connection-name my_conn --object users
     """
     return execute_task(ConnectionGetStructureTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command("export-query-csv")
+@params.specific_connection_params
+@params_connection.query
+@params_connection.query_file
+@params_connection.output_file
+@params_connection.delimiter
+@params_connection.no_header
+def export_query_csv(ctx: click.Context, **kwargs: Any) -> bool:
+    """Export the result of a SELECT query to a CSV file.
+
+    Only read-only SELECT (or WITH) queries are accepted. The query can
+    be passed inline or read from a .sql file.
+
+    Examples:
+
+        nld connection export-query-csv --connection-name my_conn \
+            --query "SELECT * FROM users" --output-file users.csv
+
+        nld connection export-query-csv --connection-name my_conn \
+            --query-file users.sql --delimiter ";"
+    """
+    return execute_task(ConnectionExportQueryCsvTask)  # type: ignore[no-any-return]
 
 
 @requires_wrapper.nld_command("list")

@@ -9,7 +9,7 @@ from nld.structure.events import FieldCharacterisationAlreadySet
 from .field_characterisation import (
     FieldCharacterisation,
 )
-from .field_characterisation_def import (
+from .field_characterisation_definition import (
     FieldCharacterisationDefinitionNames,
 )
 from .field_data_type import FieldDataType

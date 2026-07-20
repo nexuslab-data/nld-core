@@ -7,6 +7,7 @@ from .logic import (
 from .manager import BySourceTstStateManager
 from .sql_filter_manager import BySourceTstSqlFilterManager
 from .state import (
+    BySourceTstPlannedProcessingDetailledState,
     BySourceTstPlannedProcessingState,
     BySourceTstProcessingState,
     BySourceTstSourceState,
@@ -17,6 +18,7 @@ __all__ = [
     "BY_SOURCE_TST_FLOW_INCREMENTAL_LOGIC",
     "BY_SOURCE_TST_INCREMENTAL_DEFINITION",
     "BySourceTstFlowIncrementalParams",
+    "BySourceTstPlannedProcessingDetailledState",
     "BySourceTstPlannedProcessingState",
     "BySourceTstProcessingState",
     "BySourceTstSourceState",

@@ -4,9 +4,15 @@ from typing import Any
 
 import sqlglot
 
-from nld.connector.base import QueryWrapper, SQLConnectorStructureReader
+from nld.connector.base import SQLConnectorStructureReader
+from nld.connector.base.structure_reader import (
+    normalize_structure_type,
+    parse_view_dependencies,
+)
+from nld.connector.duckdb.connector_definition import DUCKDB_CONNECTOR_DEFINITION
 from nld.connector.duckdb.duckdb_structure import DuckDBStructure
 from nld.connector.duckdb.engine.duckdb_native.connector import DuckDBSQLConnector
+from nld.connector.duckdb.sqlglot.ddl import DuckDBSqlglotDDLBuilder
 from nld.structure import (
     Field,
     FieldCharacterisationDefinitionNames,
@@ -14,16 +20,6 @@ from nld.structure import (
     StructureCharacterisation,
     StructureCharacterisationDefinitionNames,
 )
-
-
-def _escape_sql_literal(value: str) -> str:
-    """Escape a SQL string literal by doubling single quotes.
-
-    Only intended for internal information_schema queries where
-    values are schema/table names from framework config.  Do not
-    use for user-facing input.
-    """
-    return value.replace("'", "''")
 
 
 class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
@@ -39,6 +35,11 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
     def active_database(self) -> str | None:
         """Get the active database name from the connection."""
         return self._connector.get_active_database()
+
+    @property
+    def _ddl_builder(self) -> DuckDBSqlglotDDLBuilder:
+        """The builder owning every catalog query this reader runs."""
+        return DuckDBSqlglotDDLBuilder()
 
     def extract_structures(
         self,
@@ -64,15 +65,24 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
         if not tables:
             return []
 
-        table_keys = [(t["table_schema"], t["table_name"]) for t in tables]
-
-        all_columns = self._get_all_columns(catalog, table_keys)
-        all_pk_columns = self._get_all_primary_key_columns(catalog, table_keys)
+        # The four detail queries apply the same catalog filter as the
+        # listing and build target_tables as an inline subquery — no
+        # VALUES list re-serialized from a prior round trip.
+        all_columns = self._get_all_columns(catalog, schema, object_name)
+        all_pk_columns = self._get_all_primary_key_columns(
+            catalog,
+            schema,
+            object_name,
+        )
         # DuckDB creates UNIQUE via CREATE UNIQUE INDEX (not ADD CONSTRAINT).
         # information_schema.table_constraints does NOT list these, so we
         # read them from duckdb_indexes() instead.
-        all_unique_constraints = self._get_all_unique_indexes(catalog, table_keys)
-        all_indexes = self._get_all_indexes(catalog, table_keys)
+        all_unique_constraints = self._get_all_unique_indexes(
+            catalog,
+            schema,
+            object_name,
+        )
+        all_indexes = self._get_all_indexes(catalog, schema, object_name)
 
         structures: list[Structure] = []
         for table_info in tables:
@@ -99,20 +109,31 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
 
         return structures
 
-    @staticmethod
-    def _catalog_filter(column: str, catalog: str | None) -> str:
-        """Build a SQL predicate to scope a query to one catalog."""
-        if catalog:
-            return f"{column} = '{_escape_sql_literal(catalog)}'"
-        return "1=1"
+    def get_all_dependent_views(
+        self,
+        schema: str,
+    ) -> dict[str, list[str]]:
+        """Return every direct view-dependency edge, parsed from definitions.
 
-    def _build_values_clause(self, table_keys: list[tuple[str, str]]) -> str:
-        """Build a VALUES clause for filtering."""
-        values_parts = [
-            f"('{_escape_sql_literal(schema)}', '{_escape_sql_literal(table)}')"
-            for schema, table in table_keys
-        ]
-        return "VALUES " + ", ".join(values_parts)
+        DuckDB has no queryable view-dependency catalog (views are
+        late-binding), so the edges are derived by parsing the
+        definitions ``duckdb_views()`` returns.
+        """
+        query = self._ddl_builder.build_views_query(schema=schema)
+        result = self._connector.execute_query(query)
+        result.raise_on_error(f"DuckDB view listing failed for schema {schema}")
+        df = result.get_result_df()
+        if df.empty:
+            return {}
+        view_definitions = {
+            str(row["view_name"]).lower(): str(row["sql"])
+            for _, row in df.iterrows()
+            if row.get("sql")
+        }
+        return parse_view_dependencies(
+            view_definitions=view_definitions,
+            dialect="duckdb",
+        )
 
     def _get_tables_and_views(
         self,
@@ -121,28 +142,14 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
         object_name: str | None,
     ) -> list[dict[str, Any]]:
         """Retrieve the list of tables and views for a catalog."""
-        excluded_schemas = ", ".join(f"'{s}'" for s in self.EXCLUDED_SCHEMAS)
-
-        query = f"""
-            SELECT table_catalog, table_schema, table_name, table_type
-            FROM information_schema.tables
-            WHERE table_schema NOT IN ({excluded_schemas})
-            AND table_catalog = '{{{{ catalog }}}}'
-            {{% if schema %}}AND table_schema = '{{{{ schema }}}}'{{% endif %}}
-            {{% if object_name %}}AND table_name = '{{{{ object_name }}}}'{{% endif %}}
-            ORDER BY table_schema, table_name
-        """
-
-        params: dict[str, Any] = {
-            "catalog": _escape_sql_literal(catalog or ""),
-        }
-        if schema:
-            params["schema"] = _escape_sql_literal(schema)
-        if object_name:
-            params["object_name"] = _escape_sql_literal(object_name)
-
-        result = self._connector.execute_query(QueryWrapper(query=query, params=params))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_tables_and_views_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            catalog=catalog,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
         if df.empty:
             return []
         return df.to_dict("records")  # type: ignore[return-value]
@@ -150,39 +157,18 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
     def _get_all_columns(
         self,
         catalog: str | None,
-        table_keys: list[tuple[str, str]],
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], list[dict[str, Any]]]:
-        """Retrieve columns for all specified tables at once."""
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-        cat_filter = self._catalog_filter("c.table_catalog", catalog)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT
-                c.table_schema,
-                c.table_name,
-                c.column_name,
-                c.data_type,
-                c.character_maximum_length,
-                c.numeric_precision,
-                c.numeric_scale,
-                c.is_nullable,
-                c.column_default
-            FROM information_schema.columns c
-            INNER JOIN target_tables t
-                ON c.table_schema = t.schema_name
-                AND c.table_name = t.table_name
-            WHERE {cat_filter}
-            ORDER BY c.table_schema, c.table_name, c.ordinal_position
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        """Retrieve columns for all filtered tables at once."""
+        query = self._ddl_builder.build_table_columns_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            catalog=catalog,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         columns_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
         rows: list[dict[str, Any]] = df.to_dict("records")  # type: ignore[assignment]
@@ -197,37 +183,18 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
     def _get_all_primary_key_columns(
         self,
         catalog: str | None,
-        table_keys: list[tuple[str, str]],
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], tuple[str, list[str]]]:
         """Retrieve primary key constraint name and columns."""
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-        cat_filter = self._catalog_filter("tc.table_catalog", catalog)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT tc.table_schema, tc.table_name,
-                   tc.constraint_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            INNER JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_catalog = kcu.constraint_catalog
-                AND tc.constraint_name = kcu.constraint_name
-                AND tc.constraint_schema = kcu.constraint_schema
-            INNER JOIN target_tables t
-                ON tc.table_schema = t.schema_name
-                AND tc.table_name = t.table_name
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-                AND {cat_filter}
-            ORDER BY tc.table_schema, tc.table_name,
-                     kcu.ordinal_position
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_primary_key_columns_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            catalog=catalog,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         pk_by_table: dict[tuple[str, str], tuple[str, list[str]]] = {}
         for row in df.to_dict("records"):
@@ -242,7 +209,8 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
     def _get_all_unique_indexes(
         self,
         catalog: str | None,
-        table_keys: list[tuple[str, str]],
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
         """Retrieve unique indexes for all specified tables.
 
@@ -251,32 +219,14 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
         information_schema.table_constraints. This method reads them
         from duckdb_indexes() where is_unique is true.
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-        cat_filter = self._catalog_filter("i.database_name", catalog)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT
-                i.schema_name AS table_schema,
-                i.table_name,
-                i.index_name,
-                i.sql AS index_sql
-            FROM duckdb_indexes() i
-            INNER JOIN target_tables t
-                ON i.schema_name = t.schema_name
-                AND i.table_name = t.table_name
-            WHERE i.is_unique AND NOT i.is_primary
-                AND {cat_filter}
-            ORDER BY i.schema_name, i.table_name, i.index_name
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_unique_indexes_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            catalog=catalog,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         unique_by_table: dict[tuple[str, str], dict[str, list[str]]] = {}
         for row in df.to_dict("records"):
@@ -296,40 +246,22 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
     def _get_all_indexes(
         self,
         catalog: str | None,
-        table_keys: list[tuple[str, str]],
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
         """Retrieve non-constraint indexes for all specified tables.
 
         Uses DuckDB's duckdb_indexes() function to find indexes
         that are not backing a PRIMARY KEY or UNIQUE constraint.
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-        cat_filter = self._catalog_filter("i.database_name", catalog)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT
-                i.schema_name AS table_schema,
-                i.table_name,
-                i.index_name,
-                i.is_unique,
-                i.sql AS index_sql
-            FROM duckdb_indexes() i
-            INNER JOIN target_tables t
-                ON i.schema_name = t.schema_name
-                AND i.table_name = t.table_name
-            WHERE NOT i.is_unique
-                AND {cat_filter}
-            ORDER BY i.schema_name, i.table_name, i.index_name
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_table_indexes_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            catalog=catalog,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         indexes_by_table: dict[tuple[str, str], dict[str, list[str]]] = {}
         for row in df.to_dict("records"):
@@ -403,7 +335,7 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
         """Build a Structure object from extracted metadata."""
         table_schema = table_info["table_schema"]
         table_name = table_info["table_name"]
-        table_type = self._normalize_structure_type(table_info["table_type"])
+        table_type = normalize_structure_type(table_info["table_type"])
 
         fields: dict[str, Field] = {}
         for col in columns:
@@ -478,7 +410,7 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
         elif (
             num_precision
             and not pd.isna(num_precision)
-            and not self._has_fixed_precision(data_type)
+            and not DUCKDB_CONNECTOR_DEFINITION.has_fixed_precision(data_type)
         ):
             # For DECIMAL/NUMERIC: precision is total digits, scale is
             # fractional digits.  Both must be preserved even when scale
@@ -501,43 +433,20 @@ class DuckDBStructureReader(SQLConnectorStructureReader[DuckDBSQLConnector]):
 
         return field
 
-    def _normalize_structure_type(self, raw_type: str) -> str:
-        """Normalize a DuckDB structure type."""
-        structure_type_mapping = {
-            "BASE TABLE": "TABLE",
-        }
-        upper_type = raw_type.upper() if raw_type else ""
-        return structure_type_mapping.get(upper_type, upper_type)
-
-    _DUCKDB_DATA_TYPE_ALIASES: dict[str, str] = {
-        # DuckDB normalises all text types to VARCHAR in
-        # information_schema.  Align YAML types to match readback.
-        "CHARACTER VARYING": "VARCHAR",
-        "TEXT": "VARCHAR",
-        # No other aliases — DuckDB returns canonical type names.
-        # Do NOT normalise INTEGER to INT: that would cause false
-        # diffs because the framework diff engine compares types
-        # as exact strings.
-    }
-
-    _DUCKDB_FIXED_PRECISION_TYPES: set[str] = {
-        "BIGINT",
-        "BOOLEAN",
-        "DATE",
-        "DOUBLE",
-        "FLOAT",
-        "HUGEINT",
-        "INTEGER",
-        "SMALLINT",
-        "TINYINT",
-        "VARCHAR",
-    }
-
     def _normalize_data_type(self, duckdb_type: str) -> str:
-        """Normalize a DuckDB data type to its canonical form."""
-        upper_type = duckdb_type.upper() if duckdb_type else ""
-        return self._DUCKDB_DATA_TYPE_ALIASES.get(upper_type, upper_type)
+        """Normalize a DuckDB data type to its canonical form.
 
-    def _has_fixed_precision(self, data_type: str) -> bool:
-        """Check if a data type has a fixed precision."""
-        return data_type.upper() in self._DUCKDB_FIXED_PRECISION_TYPES
+        DuckDB normalises all text types to VARCHAR in
+        information_schema; align YAML types to match readback by
+        delegating to ``DuckDBSqlglotDDLBuilder``, the single owner
+        of that string-type canonicalization (it applies the same
+        normalization when emitting DDL, so the read-back type and
+        the emitted type never diverge).
+
+        No other aliases — DuckDB returns canonical type names.
+        Do NOT normalise INTEGER to INT: that would cause false
+        diffs because the framework diff engine compares types
+        as exact strings.
+        """
+        upper_type = duckdb_type.upper() if duckdb_type else ""
+        return DuckDBSqlglotDDLBuilder.normalize_string_type(data_type=upper_type)

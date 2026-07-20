@@ -3,6 +3,8 @@ import os
 import uuid
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 from nld.connector.base import ConnectionConfigs, DataConnector
 from nld.connector.manager import ConnectorFactory
 from nld.logging.logger import NldLoggable
@@ -47,12 +49,14 @@ class NldExecutionContext(NldLoggable):
         )
 
         self.nld_config_folder_path = self.get_nld_config_folder_path()
+        self._load_dotenv_file()
         self.connection_configs = ConnectionConfigs.from_sources(
             self.nld_config_folder_path
         )
         self.connector_factory = self.init_connector_factory()
         self._file_output_service: FileOutputService | None = None
         self._project: Project | None = None
+        self._flow_environment_variables: dict[str, str] = {}
         if with_project:
             self.init_project()
 
@@ -73,9 +77,20 @@ class NldExecutionContext(NldLoggable):
             raise RuntimeError("Project is not available in the context")
         return self._project
 
-    def load_entities(self, force_reload: bool = False) -> None:
-        """Load entities into project's entity registry."""
-        self.project.load_entities(force_reload=force_reload)
+    def load_entities(
+        self,
+        force_reload: bool = False,
+        entity_types: list[str] | None = None,
+    ) -> None:
+        """Load entities into project's entity registry.
+
+        When ``entity_types`` is provided, only those types and their required
+        dependencies are loaded; otherwise every entity type is loaded.
+        """
+        self.project.load_entities(
+            force_reload=force_reload,
+            entity_types=entity_types,
+        )
 
     @property
     def entity_registry(self) -> NldEntityRegistry:
@@ -89,6 +104,39 @@ class NldExecutionContext(NldLoggable):
             or join_paths(os.getcwd(), ".nld")
             or os.getcwd()
         )
+
+    def _load_dotenv_file(self) -> None:
+        """Load the local ``.nld/.env`` file into the process environment.
+
+        Values already present in the environment are preserved
+        (``override=False``), so exported variables (CI, Kestra pod secrets)
+        always win over the local file. The file is optional: a missing file
+        is a no-op.
+        """
+        dotenv_path = join_paths(self.nld_config_folder_path, ".env")
+        load_dotenv(dotenv_path, override=False)
+
+    def set_flow_environment_variables(self, values: dict[str, str]) -> None:
+        """Store the environment variables resolved for the running flow."""
+        self._flow_environment_variables = dict(values)
+
+    @property
+    def flow_environment_variables(self) -> dict[str, str]:
+        """Environment variables resolved from the running flow's declarations."""
+        return dict(self._flow_environment_variables)
+
+    def get_environment_variable(
+        self,
+        name: str,
+        default: str | None = None,
+    ) -> str | None:
+        """Return a resolved flow environment variable, or ``default``.
+
+        Reads from the variables resolved during flow initialization from the
+        flow's ``variables`` declarations — use this in flow tasks
+        instead of ``os.getenv`` so the value comes from the declared contract.
+        """
+        return self._flow_environment_variables.get(name, default)
 
     @property
     def file_output_service(self) -> FileOutputService:

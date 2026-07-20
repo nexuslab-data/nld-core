@@ -7,6 +7,7 @@ from .logic import (
 from .manager import ByKeyStateManager
 from .sql_filter_manager import ByKeySqlFilterManager
 from .state import (
+    ByKeyPlannedProcessingDetailledState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySingleKeyProcessingState,
@@ -19,6 +20,7 @@ from .state import (
 __all__ = [
     "BY_KEY_SOURCE_FULL_FLOW_INCREMENTAL_LOGIC",
     "BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION",
+    "ByKeyPlannedProcessingDetailledState",
     "ByKeyPlannedProcessingState",
     "ByKeyProcessingState",
     "ByKeySingleKeyProcessingState",

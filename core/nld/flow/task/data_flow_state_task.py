@@ -40,7 +40,7 @@ from nld.flow.task.data_flow_state_renderers import (
     render_stateless_incremental_text,
 )
 from nld.parameters import ExecutionParameterDefinition
-from nld.service import FileOutputService
+from nld.service import EntityTypeNames, FileOutputService
 from nld.task.base import StandardTask
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.requestor_utils import resolve_default_requestor
@@ -99,7 +99,9 @@ class AbstractDataFlowStateTask(StandardTask):
         self.override_output_folder_path = override_output_folder_path
         self.display_format = (display_format or DISPLAY_FORMAT_TEXT).lower()
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+        )
 
         namespaced_data_flow_definition = (
             self.execution_context.entity_registry.get_data_flow_definition(
@@ -137,7 +139,7 @@ class AbstractDataFlowStateTask(StandardTask):
             namespaced_data_flow_definition=namespaced_data_flow_definition,
             execution_context=self.execution_context,
             open_connection=True,
-            profile_name=self.profile_name,
+            override_profile_name=self.profile_name,
         )
         assert state_backend_connector_wrapper is not None
         return state_backend_connector_wrapper
@@ -348,11 +350,12 @@ class FlowStateExecutionGetStepsTask(AbstractDataFlowStateTask):
             history = backend_manager.get_execution_history(limit=1)
             info = history.executions[0] if history.executions else None
         else:
-            history = backend_manager.get_execution_history()
-            info = next(
-                (i for i in history.executions if i.flow_uid == self.flow_uid),
-                None,
-            )
+            # Look the execution up directly by uid: this is not bounded by
+            # the history listing limit, so an execution older than the most
+            # recent runs can still be inspected. The constructor guarantees
+            # exactly one of flow_uid / latest is set.
+            assert self.flow_uid is not None
+            info = backend_manager.get_execution_info(self.flow_uid)
 
         steps = list(info.steps or []) if info is not None else []
         self._persist_or_print(
@@ -366,15 +369,15 @@ class FlowStateExecutionGetStepsTask(AbstractDataFlowStateTask):
 class FlowStateIncrementalGetStateTask(AbstractDataFlowStateTask):
     """``nld flow state incremental get-state`` — incremental state as JSON.
 
-    By default returns only the current processing state. With
-    ``--include-post-processing`` returns an object that bundles both the
-    processing state and the post-processing (authoritative) state.
+    By default returns the current authoritative state (the persisted
+    ``key_state`` in the root state folder). With ``--processing-only``
+    returns the last run's transient processing state instead.
     """
 
     init_params: ClassVar[list[str | ExecutionParameterDefinition]] = [
         *AbstractDataFlowStateTask.init_params,
         ExecutionParameterDefinition(
-            name="include_post_processing", mandatory=False, data_type="bool"
+            name="processing_only", mandatory=False, data_type="bool"
         ),
     ]
 
@@ -384,7 +387,7 @@ class FlowStateIncrementalGetStateTask(AbstractDataFlowStateTask):
         namespace: str | None = None,
         output: bool = False,
         override_output_folder_path: str | None = None,
-        include_post_processing: bool = False,
+        processing_only: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -394,7 +397,7 @@ class FlowStateIncrementalGetStateTask(AbstractDataFlowStateTask):
             override_output_folder_path=override_output_folder_path,
             **kwargs,
         )
-        self.include_post_processing = bool(include_post_processing)
+        self.processing_only = bool(processing_only)
 
     def run(self, **kwargs: Any) -> bool:
         definition = self._get_incremental_definition()
@@ -411,42 +414,35 @@ class FlowStateIncrementalGetStateTask(AbstractDataFlowStateTask):
 
         backend_manager, _ = self._build_incremental_backend_manager()
 
-        processing: FlowProcessingState | None = backend_manager.read_processing_state()
-
-        if not self.include_post_processing:
+        # The transient processing slot only reflects the last run's
+        # working set, so it stays behind the explicit opt-in flag.
+        if self.processing_only:
+            processing: FlowProcessingState | None = (
+                backend_manager.read_processing_state()
+            )
             self._persist_or_print(
                 data=processing.model_dump(mode="json", exclude_none=True)
                 if processing is not None
                 else {},
                 file_name=FLOW_STATE_INCREMENTAL_GET_STATE_FILE_NAME,
                 text=render_incremental_state_text(
-                    processing=processing,
-                    post_processing=None,
-                    include_post_processing=False,
+                    processing_state=processing,
+                    current_state=None,
+                    processing_only=True,
                 ),
             )
             return True
 
         post_processing: FlowState | None = backend_manager.read_post_processing_state()
-        # Drop both per-state nulls (via ``exclude_none``) and the
-        # top-level wrapper entries when the underlying state is missing
-        # entirely, so the payload only carries set values.
-        data: dict[str, Any] = {}
-        if processing is not None:
-            data["processing_state"] = processing.model_dump(
-                mode="json", exclude_none=True
-            )
-        if post_processing is not None:
-            data["post_processing_state"] = post_processing.model_dump(
-                mode="json", exclude_none=True
-            )
         self._persist_or_print(
-            data=data,
+            data=post_processing.model_dump(mode="json", exclude_none=True)
+            if post_processing is not None
+            else {},
             file_name=FLOW_STATE_INCREMENTAL_GET_STATE_FILE_NAME,
             text=render_incremental_state_text(
-                processing=processing,
-                post_processing=post_processing,
-                include_post_processing=True,
+                processing_state=None,
+                current_state=post_processing,
+                processing_only=False,
             ),
         )
         return True
@@ -658,7 +654,7 @@ class FlowStateIncrementalComputeTask(AbstractDataFlowStateTask):
             data=data,
             file_name=FLOW_STATE_INCREMENTAL_COMPUTE_FILE_NAME,
             text=render_planned_processing_state_text(
-                processing=processing_state,
+                processing_state=processing_state,
                 persisted=plan_state_uid is not None,
                 plan_state_uid=plan_state_uid,
                 requestor=self.requestor,

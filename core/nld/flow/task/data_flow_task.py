@@ -424,7 +424,15 @@ class DataFlowTask(BaseTask, abc.ABC):
         self.retrieve_latest_incremental_state()
         self._save_last_step_to_backend()
 
-        if self.planned_state_strategy in [
+        # A deploy-created plan is an instruction, not a computation
+        # that can go stale: it is consumed as TRUST regardless of the
+        # freshness check, so the reload intent survives interleaved
+        # incremental activity.
+        is_deploy_created_plan = bool(
+            available_planned_processing_state.requestor
+            and available_planned_processing_state.requestor.startswith("deploy:"),
+        )
+        if not is_deploy_created_plan and self.planned_state_strategy in [
             PlannedStateStrategy.AUTO,
             PlannedStateStrategy.STRICT,
         ]:

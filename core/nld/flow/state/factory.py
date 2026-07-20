@@ -140,6 +140,8 @@ class FlowStateManagerFactory(NldMixIn):
         Raises:
             ImplementationException: If the combination is not available
         """
+        kwargs["flow_started_at"] = flow_execution_info.started_at
+
         execution_state_manager = (
             self.execution_state_manager_factory.create_execution_state_manager(
                 current_execution_info=flow_execution_info,

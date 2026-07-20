@@ -1,6 +1,6 @@
 from typing import Any
 
-from nld.connector.duckdb.duckdb_data_type import DuckDBDataTypes
+from nld.connector.duckdb.connector_definition import DuckDBDataTypes
 from nld.structure import Field, Structure
 
 

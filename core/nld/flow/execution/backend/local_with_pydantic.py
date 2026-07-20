@@ -9,8 +9,12 @@ from nld.flow.execution.execution_info import (
     FlowExecutionHistory,
     FlowExecutionInfo,
     FlowExecutionState,
+    FlowStepExecutionInfo,
 )
-from nld.flow.execution.manager import ExecutionBackendStateManager
+from nld.flow.execution.manager import (
+    ExecutionBackendStateManager,
+    steps_from_loaded_executions,
+)
 from nld.flow.execution.utils import (
     EXECUTION_HISTORY_NAME,
     EXECUTION_INFO_NAME,
@@ -103,6 +107,15 @@ class LocalExecutionPydanticBackendStateManager(
             return execution_state, execution_history
 
         return FlowExecutionState(), FlowExecutionHistory(executions=[])
+
+    def _get_steps_for(self, flow_uid: str) -> list[FlowStepExecutionInfo]:
+        """Return the inline steps for an execution stored as a blob."""
+        execution_state, execution_history = self.retrieve_latest_execution_state()
+        return steps_from_loaded_executions(
+            flow_uid=flow_uid,
+            execution_state=execution_state,
+            execution_history=execution_history,
+        )
 
     def save_execution_info(
         self,

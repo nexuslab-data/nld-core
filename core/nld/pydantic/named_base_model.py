@@ -543,7 +543,20 @@ class NldNamedBaseModel(NldBaseModel):
 
         from typing import get_args, get_origin
 
+        from nld.pydantic.entity_reference import NldEntityReference
+
         origin = get_origin(annotation)
+
+        if (
+            origin is not None
+            and isinstance(origin, type)
+            and issubclass(origin, NldEntityReference)
+        ):
+            # NldEntityReference fields keep their string value: the reference
+            # is resolved lazily via NldEntityReference.resolve(), never inlined
+            # at load time (inlining breaks the str-typed field on re-validation).
+            return None
+
         if origin is type(None):
             actual_type = annotation
         elif origin is not None:

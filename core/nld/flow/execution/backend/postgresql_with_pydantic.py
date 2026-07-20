@@ -170,65 +170,6 @@ class PostgreSQLExecutionBackendStateManager(
             ),
         )
 
-    def get_latest_execution_info(
-        self, *, with_steps: bool = True
-    ) -> FlowExecutionInfo | None:
-        """Return the latest persisted FlowExecutionInfo for this flow.
-
-        Reads the row from the execution-state table (which holds the last
-        processed execution) and, when ``with_steps`` is True, joins the
-        matching step rows back in. Returns None when no execution state
-        exists for this flow.
-        """
-        info = cast(
-            FlowExecutionInfo | None,
-            self.pydantic_manager.read_model(
-                model_class=FlowExecutionInfo,
-                schema_name=self.backend_schema_name,
-                table_name=PSQL_EXECUTION_STATE_TABLE_NAME,
-                where_conditions={
-                    "flow_namespace": self.flow_namespace,
-                    "flow_name": self.flow_name,
-                },
-                exclude_fields=self._EXCLUDE_FIELDS,
-            ),
-        )
-        if info is None:
-            return None
-        if with_steps:
-            info.steps = self._get_steps_for(info.flow_uid)
-        return info
-
-    def get_execution_history(
-        self, *, limit: int | None = None, with_steps: bool = True
-    ) -> FlowExecutionHistory:
-        """Return the execution history for this flow.
-
-        Results are ordered by ``started_at`` descending (most recent first).
-        When ``limit`` is provided, at most ``limit`` entries are returned.
-        When ``with_steps`` is True, each entry has its ``steps`` populated
-        from the step-history table; otherwise the field is left empty.
-        """
-        infos = cast(
-            list[FlowExecutionInfo],
-            self.pydantic_manager.read_models(
-                model_class=FlowExecutionInfo,
-                schema_name=self.backend_schema_name,
-                table_name=PSQL_EXECUTION_HISTORY_TABLE_NAME,
-                where_conditions={
-                    "flow_namespace": self.flow_namespace,
-                    "flow_name": self.flow_name,
-                },
-                order_by=["-started_at"],
-                limit=limit,
-                exclude_fields=self._EXCLUDE_FIELDS,
-            ),
-        )
-        if with_steps:
-            for info in infos:
-                info.steps = self._get_steps_for(info.flow_uid)
-        return FlowExecutionHistory(executions=infos)
-
     def retrieve_latest_execution_state(
         self,
     ) -> tuple[FlowExecutionState, FlowExecutionHistory]:

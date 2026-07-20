@@ -39,12 +39,20 @@ def format_aligned_table(
     rows: Sequence[Sequence[str]],
     indent: str = DEFAULT_TABLE_INDENT,
     separator: str = DEFAULT_TABLE_SEPARATOR,
+    droppable_columns: Sequence[str] | None = None,
 ) -> list[str]:
     """Format ``headers`` and ``rows`` as a left-aligned ASCII table.
 
     Returns the rendered lines (header, separator, then rows) without
     a trailing newline. Callers decide how to emit them (``log_info``
     line by line, or ``"\n".join`` for a single string).
+
+    ``droppable_columns`` names the columns (by header) that may be
+    dropped entirely when every cell in that column is empty — useful to
+    keep optional columns (e.g. ``error``, per-row counts) out of the
+    table when no row carries a value for them, instead of rendering a
+    column of blanks. Columns not listed are always kept, even when
+    empty.
 
     Example::
 
@@ -54,6 +62,10 @@ def format_aligned_table(
         )
         # ['  Name | Type', '  -----------', '  foo  | INT ', '  bar  | TEXT']
     """
+    headers, rows = _drop_empty_columns(
+        headers=headers, rows=rows, droppable_columns=droppable_columns
+    )
+
     column_widths = [len(header) for header in headers]
     for row in rows:
         for index, cell in enumerate(row):
@@ -71,6 +83,37 @@ def format_aligned_table(
     for row in rows:
         lines.append(_format_row(row))
     return lines
+
+
+def _drop_empty_columns(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[str]],
+    droppable_columns: Sequence[str] | None,
+) -> tuple[list[str], list[list[str]]]:
+    """Drop droppable columns whose every cell is empty.
+
+    A cell counts as empty when it is blank or whitespace-only. Columns
+    not named in ``droppable_columns`` are always kept. Returns the
+    (possibly reduced) headers and rows as fresh lists.
+    """
+    kept_headers = list(headers)
+    kept_rows = [list(row) for row in rows]
+    if not droppable_columns:
+        return kept_headers, kept_rows
+
+    droppable = set(droppable_columns)
+    kept_indices = [
+        index
+        for index, header in enumerate(kept_headers)
+        if header not in droppable
+        or any(row[index].strip() for row in kept_rows if index < len(row))
+    ]
+    if len(kept_indices) == len(kept_headers):
+        return kept_headers, kept_rows
+
+    kept_headers = [kept_headers[index] for index in kept_indices]
+    kept_rows = [[row[index] for index in kept_indices] for row in kept_rows]
+    return kept_headers, kept_rows
 
 
 def format_key_value_lines(

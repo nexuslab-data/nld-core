@@ -198,24 +198,33 @@ class S3ByKeyPydanticStateBackendManager(S3ByKeyBackendStateManagerBase):
         self,
         processing_flow_state: ByKeyProcessingState,
     ) -> None:
-        """Persist in-flight processing state in the configured ``file_format``."""
+        """Persist the run's processing state as one file under ``state/<ts>/``."""
+        self._write_processing_state_single_file(
+            processing_flow_state=processing_flow_state,
+            serialize=self._serialize_processing_state,
+        )
+
+    def _serialize_processing_state(
+        self,
+        processing_flow_state: ByKeyProcessingState,
+        local_path: Path,
+    ) -> None:
+        """Serialise the processing state in the configured ``file_format``."""
         if self.file_format == "parquet":
             self._write_by_key_processing_state_to_parquet(
                 state=processing_flow_state,
-                local_path=self.local_processed_state_file_path,
+                local_path=local_path,
             )
         else:
             processing_flow_state.write_json_file(
-                file_path=self.local_processed_state_file_path,
+                file_path=local_path,
             )
-        self._upload_file_to_state_in_process_folder(
-            self.local_processed_state_file_path
-        )
 
     def write_post_processing_state(
         self, post_processing_flow_state: ByKeyState
     ) -> None:
         """Write post-processing state based on file_format."""
+        self._create_local_state_dir()
         if self.file_format == "parquet":
             self._write_to_parquet(post_processing_flow_state)
         else:

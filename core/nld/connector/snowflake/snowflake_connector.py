@@ -4,26 +4,33 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from nld.connector.snowflake.service.structure_diff_ddl_generator import (
-        SnowflakeStructureDiffDDLGenerator,
+    from nld.connector.snowflake.service.data_profiler import (
+        SnowflakeDataProfiler,
+    )
+    from nld.connector.snowflake.service.structure_diff_ddl_statement_builder import (
+        SnowflakeStructureDiffDDLStatementBuilder,
     )
     from nld.connector.snowflake.service.structure_reader import (
         SnowflakeStructureReader,
     )
+    from nld.connector.snowflake.sqlglot import SnowflakeSqlglotDMLBuilder
 
 from nld.connector.base import (
+    ConnectorDefinition,
+    ConnectorDeployCapabilities,
     QueryExecResult,
     QueryExecResultStatus,
+    QueryExecutionException,
     QueryOutputType,
     QueryWrapper,
     SQLDataConnector,
 )
 from nld.connector.snowflake.query_wrapper import SnowflakeQueryWrapper
 from nld.exceptions import NotImplementedMethodException
+from nld.logging.events import CSVFileWriteSuccessful
 from nld.structure import Structure
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.sqlglot.base_ddl import BaseSqlglotDDLBuilder
-from nld.utils.sqlglot.base_dml import BaseSqlglotDMLBuilder
 from snowflake.connector.cursor import SnowflakeCursor
 from snowflake.connector.errors import ProgrammingError as SnowflakeProgrammingError
 
@@ -51,7 +58,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
 
         return SnowflakeSqlglotDDLBuilder()
 
-    def get_dml_builder(self) -> BaseSqlglotDMLBuilder:
+    def get_dml_builder(self) -> SnowflakeSqlglotDMLBuilder:
         """Return a Snowflake-specific DML builder."""
         from nld.connector.snowflake.sqlglot import SnowflakeSqlglotDMLBuilder
 
@@ -69,11 +76,39 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
 
         return SnowflakeStructureReader(connector=self)
 
-    def get_structure_diff_ddl_generator(self) -> SnowflakeStructureDiffDDLGenerator:
-        """Return a Snowflake-specific structure diff DDL generator."""
-        from nld.connector.snowflake.service import SnowflakeStructureDiffDDLGenerator
+    def get_data_profiler(self) -> SnowflakeDataProfiler:
+        """Return a Snowflake data profiler for this connector."""
+        from nld.connector.snowflake.service.data_profiler import (
+            SnowflakeDataProfiler,
+        )
 
-        return SnowflakeStructureDiffDDLGenerator()
+        return SnowflakeDataProfiler(self)
+
+    def get_structure_diff_ddl_statement_builder(
+        self,
+    ) -> SnowflakeStructureDiffDDLStatementBuilder:
+        """Return a Snowflake-specific structure diff DDL generator."""
+        from nld.connector.snowflake.service import (
+            SnowflakeStructureDiffDDLStatementBuilder,
+        )
+
+        return SnowflakeStructureDiffDDLStatementBuilder()
+
+    def get_connector_definition(self) -> ConnectorDefinition:
+        """Return the static engine facts of the Snowflake connector."""
+        from nld.connector.snowflake.connector_definition import (
+            SNOWFLAKE_CONNECTOR_DEFINITION,
+        )
+
+        return SNOWFLAKE_CONNECTOR_DEFINITION
+
+    def get_deploy_capabilities(self) -> ConnectorDeployCapabilities:
+        """Return the declared Snowflake structure deployment capabilities."""
+        from nld.connector.snowflake.service import (
+            SNOWFLAKE_DEPLOY_CAPABILITIES,
+        )
+
+        return SNOWFLAKE_DEPLOY_CAPABILITIES
 
     def get_model_manager(self) -> NldBaseModelSnowflakeManager:
         """Return a Snowflake pydantic model manager."""
@@ -82,12 +117,12 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         return NldBaseModelSnowflakeManager(connector=self)
 
     @staticmethod
-    def clean_table_path(table_path: str) -> str:
-        """Cleans the table path by checking specification compliance.
+    def clean_object_path(object_path: str) -> str:
+        """Cleans the object path by checking specification compliance.
 
-        Ensures the table path has both schema name and table name only.
+        Ensures the object path has both schema name and object name only.
         """
-        return table_path
+        return object_path
 
     def log_execution_error(  # type: ignore[override]
         self, error: SnowflakeProgrammingError
@@ -150,7 +185,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         resolved_operation_type = query_wrapper.operation_type
         try:
             cur.execute(query_wrapper.get_interpreted_query())
-            output_data = list(cur)
+            result_data = list(cur)
 
             message = None
             output_structure = None
@@ -168,8 +203,8 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
                 )
             else:
                 # Snowflake DDL returns a status row
-                if output_data and len(output_data) > 0:
-                    first_row = output_data[0]
+                if result_data and len(result_data) > 0:
+                    first_row = result_data[0]
                     if isinstance(first_row, tuple) and len(first_row) > 0:
                         message = str(first_row[0])
                     else:
@@ -193,7 +228,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
                 message=message,
                 operation_type=resolved_operation_type,
                 row_count=row_count,
-                output_data=output_data,
+                result_data=result_data,
             )
             return result
         except SnowflakeProgrammingError as e:
@@ -208,11 +243,53 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
                 start_tst=start_tst,
                 end_tst=get_current_datetime(),
                 operation_type=resolved_operation_type,
-                output_data=[SnowflakeUtil.get_standard_error_message(e)],
+                result_data=[SnowflakeUtil.get_standard_error_message(e)],
             )
             return result
         finally:
             cur.close()
+
+    def export_query_to_csv(
+        self,
+        query: str | QueryWrapper,
+        output_file_path: str,
+        delimiter: str = ",",
+        include_header: bool = True,
+        encoding: str = "utf-8",
+    ) -> int:
+        """Export a SELECT result to CSV via the Snowflake Arrow fetch path.
+
+        ``fetch_pandas_all`` pulls the result set as Arrow batches from
+        Snowflake, which is the connector-native way to materialize a
+        query result before writing it to the target CSV file.
+        """
+        self.assert_select_query(query)
+        query_text = query.query if isinstance(query, QueryWrapper) else query
+        cursor = self.get_active_cursor(self.connection_wrapper)
+        try:
+            cursor.execute(query_text)
+            data_frame = cursor.fetch_pandas_all()
+        except SnowflakeProgrammingError as error:
+            self.log_execution_error(error)
+            raise QueryExecutionException(
+                error_message=SnowflakeUtil.get_standard_error_message(error),
+            ) from error
+        finally:
+            cursor.close()
+        data_frame.to_csv(
+            output_file_path,
+            sep=delimiter,
+            header=include_header,
+            index=False,
+            encoding=encoding,
+        )
+        self.log_event(
+            CSVFileWriteSuccessful(
+                object_type_name="QueryResult",
+                file_path=output_file_path,
+            ),
+        )
+        return len(data_frame)
 
     def execute_query_for_single_value_output(
         self,
@@ -220,7 +297,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
     ) -> Any:
         query_exec_result = self.execute_query(query=query)
 
-        return query_exec_result.get_output_data_single_value()
+        return query_exec_result.get_result_single_value()
 
     # Connection operations
     def _set_role_on_connection(self, role: str) -> QueryExecResult:
@@ -312,8 +389,8 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
 
     # Standard operations
     def truncate_table(self, table_path: str, **kwargs: Any) -> QueryExecResult:
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         return self.execute_query(
             query=QueryWrapper(
                 query=self.get_ddl_builder().build_truncate_table(
@@ -335,8 +412,8 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         self, table_path: str, if_exists: bool = False, **kwargs: Any
     ) -> QueryExecResult:
         """Drop a Snowflake table."""
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
         return self.execute_query(
             query=QueryWrapper(
                 query=self.get_ddl_builder().build_drop_table(
@@ -373,13 +450,18 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
             elif table_exists == "fail":
                 raise ValueError(f"Table {table_path} already exists")
 
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
 
+        ddl_builder = self.get_ddl_builder()
         columns = [
             (
                 field.name,
-                self._build_type_expression(field),
+                ddl_builder.build_type_expression(
+                    data_type=field.data_type,
+                    length=field.length,
+                    precision=field.precision,
+                ),
                 field.is_mandatory(),
             )
             for field in structure.get_all_fields()
@@ -401,22 +483,12 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         )
         return self.execute_query(query=QueryWrapper(query=create_sql, name=table_path))
 
-    @staticmethod
-    def _build_type_expression(field: Any) -> str:
-        """Build a SQL type expression from a Field."""
-        data_type: str = field.data_type.upper()
-        if field.length > 0 and field.precision > 0:
-            return f"{data_type}({field.length}, {field.precision})"
-        if field.length > 0:
-            return f"{data_type}({field.length})"
-        return data_type
-
-    def _split_table_path(self, table_path: str) -> tuple[str, str]:
-        """Split a qualified table path into schema and table name."""
-        if "." in table_path:
-            schema_name, table_name = table_path.split(".", maxsplit=1)
+    def _split_object_path(self, object_path: str) -> tuple[str, str]:
+        """Split a qualified object path into schema and object name."""
+        if "." in object_path:
+            schema_name, table_name = object_path.split(".", maxsplit=1)
             return schema_name, table_name
-        return self.get_active_schema() or "PUBLIC", table_path
+        return self.get_active_schema() or "PUBLIC", object_path
 
     def get_row_count(
         self,
@@ -431,19 +503,48 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
             where_conditions=where_conditions,
         )
         result = self.execute_query(query)
-        value = result.get_output_data_single_value()
+        value = result.get_result_single_value()
         return int(value) if value is not None else 0
 
-    def does_object_exist(self, table_path: str, **kwargs: Any) -> bool:
-        table_path = self.clean_table_path(table_path)
-        schema_name, table_name = self._split_table_path(table_path)
+    def does_object_exist(self, object_path: str, **kwargs: Any) -> bool:
+        object_path = self.clean_object_path(object_path)
+        schema_name, table_name = self._split_object_path(object_path)
+        # SHOW OBJECTS reads the authoritative metadata store — the
+        # INFORMATION_SCHEMA.TABLES view can serve stale rows right
+        # after cross-session DDL (renames especially). LIKE treats
+        # "_" as a single-char wildcard, so the rows are re-filtered
+        # on the exact name.
+        pattern = table_name.upper().replace("'", "''")
+        query = f"SHOW OBJECTS LIKE '{pattern}' IN SCHEMA \"{schema_name.upper()}\""
+        query_exec_result = self.execute_query(query)
+        # A failed listing must raise, never report "does not exist" —
+        # deploy decisions (CREATE vs ALTER) depend on this answer.
+        query_exec_result.raise_on_error(
+            f"Snowflake object-existence check failed: {query}",
+        )
+        return any(
+            record["name"] == table_name.upper()
+            for record in query_exec_result.get_result_records()
+        )
+
+    def get_column_names(self, object_path: str, **kwargs: Any) -> list[str]:
+        object_path = self.clean_object_path(object_path)
+        schema_name, table_name = self._split_object_path(object_path)
         query_exec_result = self.execute_query(
-            self.get_ddl_builder().build_exists_query(
+            self.get_ddl_builder().build_column_names_query(
                 schema=schema_name,
                 table=table_name,
             )
         )
-        return bool(query_exec_result.get_output_data_single_value())
+        query_exec_result.raise_on_error(
+            f"Snowflake column-name read failed for {object_path}",
+        )
+        # Snowflake stores unquoted identifiers in uppercase; lower them
+        # to match the nld naming convention, like the structure reader.
+        return [
+            record["column_name"].lower()
+            for record in query_exec_result.get_result_records()
+        ]
 
     @staticmethod
     def _escape_value(value: Any) -> str:
@@ -466,7 +567,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         When conflict_merge_fields is provided, uses MERGE INTO for
         upsert semantics instead of plain INSERT.
         """
-        table_path = self.clean_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
         cols = ", ".join(column_list)
         results: list[QueryExecResult] = []
 
@@ -519,7 +620,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         sql_query: str,
     ) -> QueryExecResult:
         """Create or replace a Snowflake view."""
-        view_path = self.clean_table_path(view_path)
+        view_path = self.clean_object_path(view_path)
         sql = f"CREATE OR REPLACE VIEW {view_path} AS {sql_query}"
         return self.execute_query(QueryWrapper(query=sql, name=view_path))
 
@@ -535,7 +636,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         **kwargs: Any,
     ) -> QueryExecResult:
         """Upsert rows from a SELECT query using Snowflake MERGE INTO."""
-        table_path = self.clean_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
         cols = ", ".join(column_list)
         on_clause = " AND ".join(f"target.{f} = source.{f}" for f in upsert_fields)
         exclude_set = set(exclude_from_update or [])
@@ -544,6 +645,10 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         update_cols = [
             c for c in column_list if c not in upsert_fields and c not in exclude_set
         ]
+        if not update_cols:
+            raise ValueError(
+                "No fields to update after excluding upsert_fields",
+            )
         update_parts = []
         for c in update_cols:
             if c in overrides:
@@ -601,7 +706,22 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         where_conditions: dict[str, Any],
         **kwargs: Any,
     ) -> QueryExecResult:
-        raise NotImplementedMethodException(self.__class__, "delete_from")
+        """Delete rows from a Snowflake table matching the conditions."""
+        if not where_conditions:
+            raise ValueError(
+                "where_conditions must not be empty to prevent accidental full deletes"
+            )
+        table_path = self.clean_object_path(table_path)
+        dml_builder = self.get_dml_builder()
+        conditions = [
+            dml_builder.equality_clause(field=field, value=value)
+            for field, value in where_conditions.items()
+        ]
+        where = dml_builder.and_clause(conditions)
+        delete_query = f"DELETE FROM {table_path} WHERE {where}"
+        return self.execute_query(
+            QueryWrapper(query=delete_query, name=table_path),
+        )
 
     def insert_into_from_query(
         self,
@@ -611,7 +731,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         **kwargs: Any,
     ) -> QueryExecResult:
         """Insert rows from a SELECT query into a Snowflake table."""
-        table_path = self.clean_table_path(table_path)
+        table_path = self.clean_object_path(table_path)
         cols = ", ".join(column_list)
         sql = f"INSERT INTO {table_path} ({cols}) {sql_query}"
         return self.execute_query(QueryWrapper(query=sql, name=table_path))
@@ -623,7 +743,20 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         key_columns: list[str],
         **kwargs: Any,
     ) -> QueryExecResult:
-        raise NotImplementedMethodException(self.__class__, "delete_from_query")
+        """Delete rows whose keys match the SELECT query, via DELETE USING.
+
+        The SQL is rendered by the Snowflake DML builder
+        (``build_delete_from_query``).
+        """
+        table_path = self.clean_object_path(table_path)
+        delete_query = self.get_dml_builder().build_delete_from_query(
+            table_path=table_path,
+            sql_query=sql_query,
+            key_columns=key_columns,
+        )
+        return self.execute_query(
+            QueryWrapper(query=delete_query, name=table_path),
+        )
 
     def copy_into_table_from_stage(
         self,

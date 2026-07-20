@@ -15,6 +15,8 @@ class FieldDiff(NldBaseModel):
     field_name: str
     data_type_from: str | None = None
     data_type_to: str | None = None
+    default_from: str | None = None
+    default_to: str | None = None
     length_from: int | None = None
     length_to: int | None = None
     precision_from: int | None = None
@@ -40,6 +42,7 @@ class StructureDiff(NldBaseModel):
     table_exists: bool
     field_diffs: list[FieldDiff] = []
     characterisation_diffs: list[CharacterisationDiff] = []
+    order_mismatch: bool = False
 
     def has_changes(self) -> bool:
         """Return True if the table is new or any differences exist."""
@@ -47,6 +50,7 @@ class StructureDiff(NldBaseModel):
             not self.table_exists
             or len(self.field_diffs) > 0
             or len(self.characterisation_diffs) > 0
+            or self.order_mismatch
         )
 
     def is_new_table(self) -> bool:

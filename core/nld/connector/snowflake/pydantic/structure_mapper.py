@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Union, cast, get_args, get_origin
 
-from nld.connector.snowflake.snowflake_data_type import SnowflakeDataTypes
+from nld.connector.snowflake.connector_definition import SnowflakeDataTypes
 from nld.pydantic import BasePydanticStructureMapper, NldBaseModel
 from nld.structure import (
     Field,

@@ -2,6 +2,7 @@ from typing import Any, ClassVar
 
 from nld.flow.definition import NamespacedDataFlowDefinition
 from nld.parameters import ExecutionParameterDefinition
+from nld.service import EntityTypeNames
 from nld.task.base import StandardTask
 
 from .sql_rendering_executor import SQLRenderingExecutor
@@ -49,7 +50,9 @@ class SQLRenderingExecutionTask(StandardTask):
         self.flow_name = name
         self.flow_namespace = namespace
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+        )
 
         if name is not None:
             namespaced_flow = (

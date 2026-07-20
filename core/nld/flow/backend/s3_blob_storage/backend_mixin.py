@@ -9,6 +9,10 @@ from nld.connector.s3_blob_storage import S3ObjectStorageConnector, S3Structure
 from nld.flow.backend.utils import BackendStandardFolderNames
 from nld.parameters import ExecutionParameterDefinition
 from nld.utils import clean_folder_path, join_paths
+from nld.utils.datetime_util import (
+    format_datetime_to_compact_string,
+    get_current_datetime_as_compact_str,
+)
 
 if TYPE_CHECKING:
     from nld.flow.definition.flow_definition import DataFlowDefinition
@@ -33,9 +37,15 @@ class S3BackendMixin(abc.ABC):
 
     # Common parameter definitions for S3 backends
     s3_param_definitions: list[str | ExecutionParameterDefinition] = [
-        ExecutionParameterDefinition(name="processing_sub_folder_name", mandatory=True),
         ExecutionParameterDefinition(name="local_state_dir", mandatory=True),
+        ExecutionParameterDefinition(name="flow_started_at", mandatory=False),
     ]
+
+    #: Compact run-folder timestamp, derived once per instance from
+    #: ``flow_started_at``. Cached so the run's start and end writes share one
+    #: folder; falls back to a generated timestamp only when the factory did
+    #: not supply the flow's start timestamp.
+    _cached_run_folder_timestamp: str | None = None
 
     @property
     def s3_root_path(self) -> str:
@@ -43,28 +53,50 @@ class S3BackendMixin(abc.ABC):
         return self.parameters["s3_root_path"]  # type: ignore[no-any-return]
 
     @property
+    def run_folder_timestamp(self) -> str:
+        """Compact timestamp naming this run's folder, shared with the data.
+
+        Derived from the ``flow_started_at`` the state-manager factory hands to
+        every backend, so the run's ``state/`` sits next to its ``data/`` under
+        one identical ``{s3_root}/<timestamp>/`` folder. Falls back to a
+        per-instance generated timestamp only when none was supplied.
+        """
+        if self._cached_run_folder_timestamp is None:
+            flow_started_at = self.parameters.get("flow_started_at")
+            self._cached_run_folder_timestamp = (
+                format_datetime_to_compact_string(flow_started_at)
+                if flow_started_at is not None
+                else get_current_datetime_as_compact_str()
+            )
+        return self._cached_run_folder_timestamp
+
+    @property
+    def backend_run_state_path(self) -> str:
+        """Per-run state folder, a sibling of the run's ``data/`` folder."""
+        return join_paths(
+            self.s3_root_path,
+            self.run_folder_timestamp,
+            BackendStandardFolderNames.STATE,
+        )
+
+    @property
     def local_state_dir(self) -> Path:
         """Get the local state directory from parameters."""
         return Path(self.parameters["local_state_dir"])
 
-    @property
-    def processing_sub_folder_name(self) -> str:
-        """Get the processing sub folder name from parameters."""
-        return self.parameters["processing_sub_folder_name"]  # type: ignore[no-any-return]
+    def _create_local_state_dir(self) -> None:
+        """Create the local state directory ahead of a state-file write.
+
+        State files are written to ``local_state_dir`` and then uploaded. On a
+        first run no prior download has created the directory, so every write
+        path calls this before writing to avoid a missing-directory failure.
+        """
+        self.local_state_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def backend_state_root_path(self) -> str:
         """Get the backend state root path."""
         return join_paths(self.s3_root_path, BackendStandardFolderNames.STATE)
-
-    @property
-    def backend_state_for_processing_path(self) -> str:
-        """Get the backend state path for processing."""
-        return join_paths(
-            self.s3_root_path,
-            self.processing_sub_folder_name,
-            BackendStandardFolderNames.STATE,
-        )
 
     @property
     @abc.abstractmethod
@@ -104,12 +136,22 @@ class S3BackendMixin(abc.ABC):
             file_paths=local_paths,
         )
 
-    def _upload_file_to_state_in_process_folder(
+    def _upload_file_to_state_root(
         self,
         local_path: Path,
     ) -> None:
-        """Upload a file to the process-specific state folder in S3."""
+        """Upload a file to the flow's state root folder in S3."""
         self.backend_connector.upload_file_from_local_path(
             local_file_path=str(local_path),
-            obj_storage_path=f"{self.backend_state_for_processing_path}/{local_path.name}",
+            obj_storage_path=f"{self.backend_state_root_path}/{local_path.name}",
+        )
+
+    def _upload_file_to_run_state_folder(
+        self,
+        local_path: Path,
+    ) -> None:
+        """Upload a file to this run's state folder next to its data folder."""
+        self.backend_connector.upload_file_from_local_path(
+            local_file_path=str(local_path),
+            obj_storage_path=f"{self.backend_run_state_path}/{local_path.name}",
         )

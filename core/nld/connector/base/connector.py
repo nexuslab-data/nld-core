@@ -11,18 +11,26 @@ import pandas as pd
 from nld.exceptions import NotImplementedMethodException
 from nld.structure import Structure
 from nld.utils.mixin import NldMixIn
+from nld.utils.sqlglot import get_query_statement_type, is_select_query
 from nld.utils.sqlglot.base_ddl import BaseSqlglotDDLBuilder
 from nld.utils.sqlglot.base_dml import BaseSqlglotDMLBuilder
 
 from .connection import ConnectionWrapper
+from .connector_definition import ConnectorDefinition
+from .deploy_capabilities import ConnectorDeployCapabilities
+from .exceptions import (
+    NonSelectQueryException,
+    SingleValueResultException,
+)
 from .query import QueryExecResult, QueryWrapper
 
 if TYPE_CHECKING:
     from nld.pydantic.backend.base_model_manager import NldBaseModelManager
-    from nld.structure.deploy.structure_diff_ddl_generator import (
-        BaseStructureDiffDDLGenerator,
+    from nld.structure.deploy.structure_diff_ddl_statement_builder import (
+        BaseStructureDiffDDLStatementBuilder,
     )
 
+    from .data_profiler import ConnectorDataProfiler
     from .structure_reader import ConnectorStructureReader
 
 
@@ -79,6 +87,26 @@ class DataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](NldMixIn):
             "get_structure_reader",
         )
 
+    def supports_data_profiling(self) -> bool:
+        """Whether this connector's engine can profile/audit table data.
+
+        False on the base connector; SQL connectors override it. Callers can
+        check this before requesting a profiler to give a clean error for
+        engines (e.g. blob storage) that cannot measure data.
+        """
+        return False
+
+    def get_data_profiler(self) -> ConnectorDataProfiler[Any]:
+        """Return a data profiler for this connector.
+
+        Only connectors whose engine can measure data override this; the base
+        connector raises, so profiling is an opt-in per-engine capability.
+        """
+        raise NotImplementedMethodException(
+            self.__class__,
+            "get_data_profiler",
+        )
+
     def get_ddl_builder(self) -> BaseSqlglotDDLBuilder:
         """Return a DDL builder for this connector's dialect.
 
@@ -91,7 +119,9 @@ class DataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](NldMixIn):
             "get_ddl_builder",
         )
 
-    def get_structure_diff_ddl_generator(self) -> BaseStructureDiffDDLGenerator:
+    def get_structure_diff_ddl_statement_builder(
+        self,
+    ) -> BaseStructureDiffDDLStatementBuilder:
         """Return a DDL generator for structure deployment.
 
         Subclasses that support structure deployment must override
@@ -99,7 +129,31 @@ class DataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](NldMixIn):
         """
         raise NotImplementedMethodException(
             self.__class__,
-            "get_structure_diff_ddl_generator",
+            "get_structure_diff_ddl_statement_builder",
+        )
+
+    def get_connector_definition(self) -> ConnectorDefinition:
+        """Return the static engine facts of this connector.
+
+        Subclasses must override this method to return their declared
+        definition — the models and services consult it instead of
+        hardcoding engine knowledge locally.
+        """
+        raise NotImplementedMethodException(
+            self.__class__,
+            "get_connector_definition",
+        )
+
+    def get_deploy_capabilities(self) -> ConnectorDeployCapabilities:
+        """Return what this engine supports for structure deployment.
+
+        Subclasses that support structure deployment must override
+        this method to return their declared capability profile — an
+        engine whose behavior was never assessed must not deploy.
+        """
+        raise NotImplementedMethodException(
+            self.__class__,
+            "get_deploy_capabilities",
         )
 
     def get_dml_builder(self) -> BaseSqlglotDMLBuilder:
@@ -160,6 +214,30 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
             "sqlglot_dialect",
         )
 
+    def supports_data_profiling(self) -> bool:
+        """SQL engines can profile data via aggregate queries."""
+        return True
+
+    def commit(self) -> None:
+        """Commit the engine's current transaction, when it has one.
+
+        Commit ownership lives on the connector: callers must never
+        reach into the connection wrapper. The default commits through
+        the underlying connection when it exposes a commit and does
+        nothing otherwise (engines without a transaction concept, or
+        whose ``execute_query`` already commits per statement).
+        """
+        connection = getattr(self.connection_wrapper, "connection", None)
+        if connection is not None and hasattr(connection, "commit"):
+            connection.commit()
+
+    def get_data_profiler(self) -> ConnectorDataProfiler[Any]:
+        """Return the SQL data profiler, which builds its queries via the
+        connector's dialect DML builder and runs them with ``execute_query``."""
+        from .data_profiler import SQLConnectorDataProfiler
+
+        return SQLConnectorDataProfiler(self)
+
     def get_ddl_builder(self) -> BaseSqlglotDDLBuilder:
         """Return a DDL builder for this connector's dialect.
 
@@ -183,6 +261,64 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
 
     def execute_query(self, query: str | QueryWrapper) -> QueryExecResult:
         raise NotImplementedMethodException(self.__class__, "execute_query")
+
+    @staticmethod
+    def clean_object_path(object_path: str) -> str:
+        """Normalize an object path for this engine.
+
+        The default is an identity transform; concrete connectors
+        override it with their own path-normalization rules.
+        """
+        return object_path
+
+    # Read-only export operations
+
+    def assert_select_query(self, query: str | QueryWrapper) -> None:
+        """Raise when the query is not a read-only SELECT statement.
+
+        Used by per-connector CSV exporters so a read-only export cannot
+        mutate the connected database.
+        """
+        query_text = query.query if isinstance(query, QueryWrapper) else query
+        if not is_select_query(query_text, dialect=self.sqlglot_dialect):
+            raise NonSelectQueryException(
+                query_type=get_query_statement_type(
+                    query_text,
+                    dialect=self.sqlglot_dialect,
+                ),
+            )
+
+    @abc.abstractmethod
+    def export_query_to_csv(
+        self,
+        query: str | QueryWrapper,
+        output_file_path: str,
+        delimiter: str = ",",
+        include_header: bool = True,
+        encoding: str = "utf-8",
+    ) -> int:
+        """Execute a SELECT query and export its result to a CSV file.
+
+        Only read-only SELECT (or WITH) statements are accepted so the
+        operation cannot mutate the connected database. Each connector
+        implements this using its native dependency export path (e.g.
+        psycopg2 ``COPY`` for PostgreSQL) for efficiency.
+
+        Args:
+            query: the SELECT query to execute.
+            output_file_path: path of the CSV file to write.
+            delimiter: field delimiter for the CSV output.
+            include_header: when True, writes a header row with column names.
+            encoding: text encoding of the CSV file.
+
+        Returns:
+            The number of data rows written to the CSV file.
+
+        Raises:
+            NonSelectQueryException: when the query is not a SELECT statement.
+            QueryExecutionException: when the query execution fails.
+        """
+        raise NotImplementedMethodException(self.__class__, "export_query_to_csv")
 
     # DDL operations
 
@@ -272,7 +408,7 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         raise NotImplementedMethodException(self.__class__, "truncate_table")
 
     @abc.abstractmethod
-    def does_object_exist(self, table_path: str, **kwargs: Any) -> bool:
+    def does_object_exist(self, object_path: str, **kwargs: Any) -> bool:
         """Check whether a database object (table or view) exists.
 
         Queries the database metadata catalog to determine whether
@@ -280,12 +416,49 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         information_schema or equivalent system tables.
 
         Args:
-            table_path: fully qualified object path (e.g. schema.table).
+            object_path: fully qualified object path (e.g. schema.table).
 
         Returns:
             True if the object exists, False otherwise.
         """
         raise NotImplementedMethodException(self.__class__, "does_object_exist")
+
+    def does_schema_exist(self, schema: str, **kwargs: Any) -> bool:
+        """Check whether a schema (or dataset) exists.
+
+        Default implementation queries the metadata catalog through
+        the dialect DDL builder. Connectors with a dedicated metadata
+        API (e.g. BigQuery datasets) should override this.
+
+        Args:
+            schema: the schema name.
+
+        Returns:
+            True if the schema exists, False otherwise.
+        """
+        result = self.execute_query(
+            self.get_ddl_builder().build_schema_exists_query(schema=schema),
+        )
+        try:
+            return bool(result.get_result_single_value())
+        except SingleValueResultException:
+            return False
+
+    @abc.abstractmethod
+    def get_column_names(self, object_path: str, **kwargs: Any) -> list[str]:
+        """Return a table's column names in physical order.
+
+        Queries the database metadata catalog for the columns of the
+        given object. Implementations typically query
+        information_schema or equivalent system tables.
+
+        Args:
+            object_path: fully qualified object path (e.g. schema.table).
+
+        Returns:
+            The column names, ordered by ordinal position.
+        """
+        raise NotImplementedMethodException(self.__class__, "get_column_names")
 
     def get_row_count(
         self,
@@ -313,8 +486,12 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
             where_conditions=where_conditions,
         )
         result = self.execute_query(query)
-        if result._output_data is not None and len(result._output_data) > 0:
-            return int(result._output_data[0].get("row_count", 0))
+        # get_result_records handles every engine's row shape (dict,
+        # zipped, tuple) — never reach into the private result data
+        # assuming dict rows.
+        records = result.get_result_records()
+        if records:
+            return int(records[0].get("row_count", 0))
         return 0
 
     def has_one_row(
@@ -506,6 +683,44 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
             The result of the DELETE query execution.
         """
         raise NotImplementedMethodException(self.__class__, "delete_from_query")
+
+    def mark_absent_rows_deleted(
+        self,
+        table_path: str,
+        sql_query: str,
+        key_columns: list[str],
+        deletion_flag_column: str,
+        **kwargs: Any,
+    ) -> QueryExecResult:
+        """Flag target rows absent from the query as logically deleted.
+
+        Sets the deletion flag to TRUE for every row whose key is not
+        returned by ``sql_query``. Rows already flagged are skipped so
+        reruns do not rewrite the whole table. The SQL is rendered by
+        the connector's DML builder (``build_mark_absent_rows_deleted_query``).
+
+        Args:
+            table_path: fully qualified table path (e.g. schema.table).
+            sql_query: the SELECT query returning the surviving keys.
+            key_columns: columns used to match target rows to the query.
+            deletion_flag_column: the boolean flag column to raise.
+
+        Returns:
+            The result of the UPDATE query execution.
+        """
+        table_path = self.clean_object_path(table_path)
+        update_query = self.get_dml_builder().build_mark_absent_rows_deleted_query(
+            table_path=table_path,
+            sql_query=sql_query,
+            key_columns=key_columns,
+            deletion_flag_column=deletion_flag_column,
+        )
+        return self.execute_query(
+            query=QueryWrapper(
+                query=update_query,
+                name=table_path,
+            ),
+        )
 
     def create_or_replace_view(
         self,

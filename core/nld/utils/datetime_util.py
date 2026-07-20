@@ -7,7 +7,9 @@ import pandas as pd
 # Current time, date and datetime methods
 
 COMPACT_DATETIME_FORMAT = "%Y-%m-%dT%H%M%S.%fZ"
+HUMAN_READABLE_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 FILESYSTEM_FRIENDLY_DATETIME_FORMAT = "%Y%m%d_%H%M%S"
+VERSION_DATETIME_FORMAT = "%Y%m%dT%H%M%S"
 
 
 def get_current_datetime(
@@ -51,6 +53,10 @@ def get_current_datetime_as_compact_str() -> str:
 
 def get_current_datetime_as_filesystem_friendly_str() -> str:
     return format_datetime_to_filesystem_friendly_string(get_current_datetime())
+
+
+def get_current_datetime_as_version_str() -> str:
+    return format_datetime_to_version_string(get_current_datetime())
 
 
 # Date/Datetime modification methods
@@ -127,6 +133,14 @@ def format_datetime_to_compact_string(dt: datetime.datetime) -> str:
 
 def format_datetime_to_filesystem_friendly_string(dt: datetime.datetime) -> str:
     return dt.strftime(FILESYSTEM_FRIENDLY_DATETIME_FORMAT)
+
+
+def format_datetime_to_version_string(dt: datetime.datetime) -> str:
+    return dt.strftime(VERSION_DATETIME_FORMAT)
+
+
+def format_datetime_to_human_readable_string(dt: datetime.datetime) -> str:
+    return dt.strftime(HUMAN_READABLE_DATETIME_FORMAT)
 
 
 def format_timedelta_to_default(td: datetime.timedelta) -> str:

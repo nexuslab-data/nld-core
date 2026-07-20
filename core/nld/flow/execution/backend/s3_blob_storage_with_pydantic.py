@@ -225,6 +225,7 @@ class S3ExecutionPydanticBackendStateManager(S3ExecutionBackendStateManagerBase)
         saved_step_names: list[str] | None = None,
     ) -> None:
         """Save the per-execution info file to S3 based on file_format."""
+        self._create_local_state_dir()
         if self.file_format == "parquet":
             self._write_execution_info_to_parquet(current_execution_info)
         else:
@@ -235,6 +236,7 @@ class S3ExecutionPydanticBackendStateManager(S3ExecutionBackendStateManagerBase)
         execution_history: FlowExecutionHistory,
     ) -> None:
         """Rewrite the consolidated execution history file on S3."""
+        self._create_local_state_dir()
         if self.file_format == "parquet":
             self._write_execution_history_to_parquet(execution_history)
         else:
@@ -246,6 +248,7 @@ class S3ExecutionPydanticBackendStateManager(S3ExecutionBackendStateManagerBase)
         new_execution_state: FlowExecutionState | None = None,
     ) -> None:
         """Save the execution state record to S3 based on file_format."""
+        self._create_local_state_dir()
         if self.file_format == "parquet":
             self._write_execution_state_to_parquet(
                 current_execution_info,
@@ -268,9 +271,7 @@ class S3ExecutionPydanticBackendStateManager(S3ExecutionBackendStateManagerBase)
                 exclude_none=True,
             )
         )
-        self._upload_file_to_state_in_process_folder(
-            self.local_execution_info_file_path
-        )
+        self._upload_file_to_run_state_folder(self.local_execution_info_file_path)
 
     def _write_execution_history_to_json(
         self,
@@ -315,9 +316,7 @@ class S3ExecutionPydanticBackendStateManager(S3ExecutionBackendStateManagerBase)
             current_execution_info
         )
         pq.write_table(info_table, self.local_execution_info_file_path)
-        self._upload_file_to_state_in_process_folder(
-            self.local_execution_info_file_path
-        )
+        self._upload_file_to_run_state_folder(self.local_execution_info_file_path)
 
     def _write_execution_history_to_parquet(
         self,

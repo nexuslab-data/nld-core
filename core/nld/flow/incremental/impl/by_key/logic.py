@@ -19,6 +19,7 @@ from nld.flow.incremental.models.events import (
 from nld.flow.utils import FlowLoadingStrategies
 
 from .state import (
+    ByKeyPlannedProcessingDetailledState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySourceState,
@@ -53,6 +54,7 @@ BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     source_state_class=ByKeySourceState,
     processing_state_class=ByKeyProcessingState,
     planned_processing_state_class=ByKeyPlannedProcessingState,
+    planned_processing_detailled_state_class=ByKeyPlannedProcessingDetailledState,
     auto_processing_state_transition=False,
     partial_state_persistence=True,
     requires_source_state_retrieval=True,

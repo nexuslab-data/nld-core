@@ -118,3 +118,15 @@ class NldNamespace(str):
 
         normalized = path.replace("\\", ".").replace("/", ".")
         return cls(normalized)
+
+
+def build_entity_key(namespace: str, entity_name: str) -> str:
+    """Build the namespace-qualified key of an entity.
+
+    Root-namespace entities key by bare name; everything else by
+    ``<namespace>.<name>`` — the one spelling shared by change sets,
+    deploy executors and change-file directives.
+    """
+    if NldNamespace(namespace).is_root:
+        return entity_name
+    return f"{namespace}.{entity_name}"

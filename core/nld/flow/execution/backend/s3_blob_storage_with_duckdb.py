@@ -240,19 +240,19 @@ class S3ExecutionDuckDBBackendStateManager(S3ExecutionBackendStateManagerBase):
         saved_step_names: list[str] | None = None,
     ) -> None:
         """Save the per-execution info Parquet file on S3 using DuckDB."""
+        self._create_local_state_dir()
         self._write_execution_info_with_duckdb(
             current_execution_info,
             self.local_execution_info_file_path,
         )
-        self._upload_file_to_state_in_process_folder(
-            self.local_execution_info_file_path
-        )
+        self._upload_file_to_run_state_folder(self.local_execution_info_file_path)
 
     def save_execution_history_complete(
         self,
         execution_history: FlowExecutionHistory,
     ) -> None:
         """Rewrite the consolidated execution history Parquet file on S3."""
+        self._create_local_state_dir()
         self._write_execution_history_with_duckdb(
             execution_history,
             self.local_execution_history_file_path,
@@ -274,6 +274,7 @@ class S3ExecutionDuckDBBackendStateManager(S3ExecutionBackendStateManagerBase):
         ):
             state_info = new_execution_state.last_processed
         assert state_info is not None
+        self._create_local_state_dir()
         self._write_execution_info_with_duckdb(
             state_info,
             self.local_execution_state_file_path,

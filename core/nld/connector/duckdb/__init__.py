@@ -1,11 +1,13 @@
 from nld.connector.base import ConnectorPlugin
 
+from .connector_definition import (
+    DUCKDB_CONNECTOR_DEFINITION,
+    DuckDBConnectorDefinition,
+    DuckDBDataTypes,
+)
 from .constants import DUCKDB_DIALECT
 from .duckdb_credential import (
     DuckDBCredential,
-)
-from .duckdb_data_type import (
-    DuckDBDataTypes,
 )
 from .duckdb_engine import DuckDBEngine
 from .duckdb_structure import (
@@ -21,7 +23,8 @@ from .engine.duckdb_native.query_wrapper import (
     DuckDBQueryWrapper,
 )
 from .service import (
-    DuckDBStructureDiffDDLGenerator,
+    DUCKDB_DEPLOY_CAPABILITIES,
+    DuckDBStructureDiffDDLStatementBuilder,
     DuckDBStructureReader,
 )
 
@@ -33,14 +36,17 @@ Plugin = ConnectorPlugin(
 )
 
 __all__ = [
+    "DUCKDB_CONNECTOR_DEFINITION",
+    "DUCKDB_DEPLOY_CAPABILITIES",
     "DuckDBConnectionWrapper",
+    "DuckDBConnectorDefinition",
     "DuckDBCredential",
     "DuckDBDataTypes",
     "DuckDBEngine",
     "DuckDBQueryWrapper",
     "DuckDBSQLConnector",
     "DuckDBStructure",
-    "DuckDBStructureDiffDDLGenerator",
+    "DuckDBStructureDiffDDLStatementBuilder",
     "DuckDBStructureReader",
     "DUCKDB_DIALECT",
 ]

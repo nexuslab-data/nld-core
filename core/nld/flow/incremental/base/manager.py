@@ -11,6 +11,7 @@ from nld.flow.incremental.base.sql_filter_manager import IncrementalSqlFilterMan
 from nld.flow.incremental.models import (
     FlowIncrementalLogic,
     FlowIncrementalParams,
+    FlowPlannedProcessingDetailledState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
@@ -35,6 +36,7 @@ class IncrementalBackendStateManager[
     FLOW_SOURCE_STATE: FlowSourceState,
     FLOW_PROCESSING_STATE: FlowProcessingState,
     FLOW_PLANNED_PROCESSING_STATE: FlowPlannedProcessingState[Any],
+    FLOW_PLANNED_PROCESSING_DETAILLED_STATE: FlowPlannedProcessingDetailledState[Any],
 ](
     NldMixIn,
     abc.ABC,
@@ -272,8 +274,8 @@ class IncrementalBackendStateManager[
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> FLOW_PROCESSING_STATE | None:
-        """Read the strategy-specific processing state for an existing plan."""
+    ) -> FLOW_PLANNED_PROCESSING_DETAILLED_STATE | None:
+        """Read the strategy-specific planned detail for an existing plan."""
         raise NotImplementedError(
             f"'read_planned_processing_state' is not implemented "
             f"for {type(self).__name__}",
@@ -282,9 +284,9 @@ class IncrementalBackendStateManager[
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        processing_state: FLOW_PROCESSING_STATE,
+        detailled_state: FLOW_PLANNED_PROCESSING_DETAILLED_STATE,
     ) -> None:
-        """Persist the strategy-specific processing state for a new PLANNED plan."""
+        """Persist the strategy-specific planned detail for a new PLANNED plan."""
         raise NotImplementedError(
             f"'write_planned_processing_state' is not implemented "
             f"for {type(self).__name__}",
@@ -320,10 +322,10 @@ class IncrementalStateManager[
         self,
         incremental_parameters: FLOW_INCREMENTAL_PARAMS,
         incremental_state_backend_manager: (
-            IncrementalBackendStateManager[Any, Any, Any, Any, Any] | None
+            IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any] | None
         ) = None,
         secondary_incremental_state_backend_manager: (
-            IncrementalBackendStateManager[Any, Any, Any, Any, Any] | None
+            IncrementalBackendStateManager[Any, Any, Any, Any, Any, Any] | None
         ) = None,
         parameters: dict[str, Any] | None = None,
     ):
@@ -420,8 +422,11 @@ class IncrementalStateManager[
         sets the live processing state from the plan's payload.
         """
         self.used_planned_processing_state = planned_processing_state
+        detailled_state = planned_processing_state.detailled_state
         self.set_processing_state(
-            processing_state=planned_processing_state.processing_state,
+            processing_state=detailled_state.to_processing_state(
+                flow_uid=detailled_state.plan_state_uid,
+            ),
         )
 
     def is_planned_processing_state_fresh(
@@ -588,8 +593,15 @@ class IncrementalStateManager[
         """
         assert self.incremental_state_backend_manager is not None
         backend = self.incremental_state_backend_manager
-        planned_state_class = (
-            self.flow_incremental_logic.definition.planned_processing_state_class
+        definition = self.flow_incremental_logic.definition
+        planned_state_class = definition.planned_processing_state_class
+        detailled_state_class = cast(
+            type[FlowPlannedProcessingDetailledState[Any]],
+            definition.planned_processing_detailled_state_class,
+        )
+        detailled_state = detailled_state_class.from_processing_state(
+            plan_state_uid=plan_state_uid,
+            processing_state=processing_flow_state,
         )
         planned_state = planned_state_class(
             plan_state_uid=plan_state_uid,
@@ -601,11 +613,11 @@ class IncrementalStateManager[
             status_changed_at=computed_at,
             requestor=requestor,
             executed_by_flow_uid=None,
-            processing_state=processing_flow_state,
+            detailled_state=detailled_state,
         )
         backend.write_planned_processing_state(
             plan_state_uid=planned_state.plan_state_uid,
-            processing_state=planned_state.processing_state,
+            detailled_state=planned_state.detailled_state,
         )
         cancelled_at = get_current_datetime()
         for state_plan in backend.read_state_plans():
@@ -659,10 +671,10 @@ class IncrementalStateManager[
             state_plan = planned[0] if planned else None
         if state_plan is None:
             return None
-        processing_state = backend.read_planned_processing_state(
+        detailled_state = backend.read_planned_processing_state(
             plan_state_uid=state_plan.plan_state_uid,
         )
-        if processing_state is None:
+        if detailled_state is None:
             return None
         planned_state_class = (
             self.flow_incremental_logic.definition.planned_processing_state_class
@@ -679,7 +691,7 @@ class IncrementalStateManager[
                 status_changed_at=state_plan.status_changed_at,
                 requestor=state_plan.requestor,
                 executed_by_flow_uid=state_plan.executed_by_flow_uid,
-                processing_state=processing_state,
+                detailled_state=detailled_state,
             ),
         )
 

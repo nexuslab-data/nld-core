@@ -3,10 +3,16 @@ from .field_adapter import FieldAdapter, FieldNamingMapping, NamespacedFieldAdap
 from .field_characterisation import (
     FieldCharacterisation,
 )
-from .field_characterisation_def import (
+from .field_characterisation_catalog import (
+    CharacterisationValidationFinding,
+    resolve_field_characterisation_definitions,
+)
+from .field_characterisation_definition import (
     FIELD_CHARACTERISATION_DEFINITIONS,
+    FieldCharacterisationDefinition,
     FieldCharacterisationDefinitionNames,
     FieldCharacterisationDefinitions,
+    NamespacedFieldCharacterisationDefinition,
 )
 from .field_format_adapter import NamespacedFieldFormatAdapter
 from .field_template import (
@@ -18,10 +24,12 @@ from .field_template import (
 )
 
 __all__ = [
+    "CharacterisationValidationFinding",
     "Field",
     "FieldAdapter",
     "FieldCharacterisation",
     "FIELD_CHARACTERISATION_DEFINITIONS",
+    "FieldCharacterisationDefinition",
     "FieldCharacterisationDefinitionNames",
     "FieldCharacterisationDefinitions",
     "FieldNamingMapping",
@@ -31,6 +39,8 @@ __all__ = [
     "FieldTemplateRelativePosition",
     "NamespacedField",
     "NamespacedFieldAdapter",
+    "NamespacedFieldCharacterisationDefinition",
     "NamespacedFieldFormatAdapter",
     "NamespacedFieldTemplate",
+    "resolve_field_characterisation_definitions",
 ]

@@ -183,11 +183,11 @@ class QueryExecResult(NldBaseModel):
     message: str | None = None
     operation_type: SQLOperationType | None = None
     row_count: int | None = None
-    _output_data: list[Any] | None = PrivateAttr(default=None)
+    _result_data: list[Any] | None = PrivateAttr(default=None)
 
-    def __init__(self, output_data: list[Any] | None = None, **data: Any) -> None:
+    def __init__(self, result_data: list[Any] | None = None, **data: Any) -> None:
         super().__init__(**data)
-        self._output_data = output_data
+        self._result_data = result_data
 
     # Methods for checking execution status
 
@@ -199,14 +199,30 @@ class QueryExecResult(NldBaseModel):
 
     def get_error_message(self) -> str:
         if self.failed():
-            if self._output_data is not None:
-                error_message = self._output_data[0]
+            if self._result_data is not None:
+                error_message = self._result_data[0]
                 if error_message is not None:
                     if type(error_message) is str:
                         return (
                             error_message.replace("\n", " ").replace("\r", " ").strip()
                         )
         return ""
+
+    def raise_on_error(self, context: str | None = None) -> None:
+        """Fail loudly when the result carries an ERROR status.
+
+        Some connector engines report a rejected statement as an
+        ERROR-status result instead of raising; callers for which a
+        failure must not degrade into an empty result (metadata
+        reads, deploy DDL) use this to surface it.
+        """
+        if not self.failed():
+            return
+        details = self.get_error_message()
+        message = context or f"Query '{self.query_name}' failed"
+        raise QueryExecutionException(
+            message + (f" — {details}" if details else ""),
+        )
 
     def get_row_count(self) -> int:
         """Return the number of affected rows, defaulting to 0."""
@@ -240,8 +256,8 @@ class QueryExecResult(NldBaseModel):
             "operation_type": (
                 self.operation_type.value if self.operation_type is not None else None
             ),
-            "output_data": self._output_data,
-            "output_data_header": (
+            "result_data": self._result_data,
+            "result_data_header": (
                 ", ".join(
                     [field.name for field in self.output_structure.fields.values()]
                 )
@@ -255,19 +271,19 @@ class QueryExecResult(NldBaseModel):
 
     # Methods for Pandas DataFrame conversion
 
-    def get_output_data_as_df(self) -> pd.DataFrame:
+    def get_result_df(self) -> pd.DataFrame:
         if self.output_structure is not None:
             return pd.DataFrame(
-                self._output_data,
+                self._result_data,
                 columns=[field.name for field in self.output_structure.fields.values()],
             )
         else:
             return pd.DataFrame()
 
-    def get_output_data_as_records(self) -> list[dict[str, Any]]:
+    def get_result_records(self) -> list[dict[str, Any]]:
         """Return the output data as a list of column-name → value dicts.
 
-        Bypasses the pandas DataFrame layer used by :meth:`get_output_data_as_df`
+        Bypasses the pandas DataFrame layer used by :meth:`get_result_df`
         so that values keep their native Python types from the underlying
         cursor — in particular, NULLs stay as ``None`` (pandas would promote
         them to ``NaN`` in numeric columns) and JSONB columns stay as
@@ -278,11 +294,11 @@ class QueryExecResult(NldBaseModel):
         Handles both tuple rows (the default psycopg2 cursor) and
         dict-like rows (e.g. ``RealDictCursor``).
         """
-        if self.output_structure is None or self._output_data is None:
+        if self.output_structure is None or self._result_data is None:
             return []
         field_names = [field.name for field in self.output_structure.fields.values()]
         records: list[dict[str, Any]] = []
-        for row in self._output_data:
+        for row in self._result_data:
             if isinstance(row, dict):
                 records.append({name: row[name] for name in field_names})
             else:
@@ -290,47 +306,47 @@ class QueryExecResult(NldBaseModel):
         return records
 
     # @deprecated
-    def get_output_data_as_dict(self) -> Any:
+    def get_result_dict(self) -> Any:
         if self.succeeded():
-            output_data_df = self.get_output_data_as_df()
-            if output_data_df.shape[0] == 0:
+            result_df = self.get_result_df()
+            if result_df.shape[0] == 0:
                 self.log_error(f"Query {self.query_name} retrieved O rows.")
             else:
-                if output_data_df.shape[0] > 1:
+                if result_df.shape[0] > 1:
                     self.log_error(
                         f"Query {self.query_name} contains more than 1 rows. "
                         f"The method to get dictionary result is meant "
                         f"for single rows result set"
                     )
                 else:
-                    return output_data_df.iloc[0].to_dict()
+                    return result_df.iloc[0].to_dict()
         else:
             self.log_error(f"Query {self.query_name} encountered an error.")
 
         return {}
 
-    def get_output_data_single_value(self) -> Any:
+    def get_result_single_value(self) -> Any:
         if self.failed():
             # The query failed at the connector level; surface the
             # original error instead of masking it as "0 rows".
             error_msg = f"Query {self.query_name} failed: {self.get_error_message()}"
             self.log_error(error_msg)
             raise SingleValueResultException(error_message=error_msg)
-        output_data_df = self.get_output_data_as_df()
-        if output_data_df.shape[0] == 0:
+        result_df = self.get_result_df()
+        if result_df.shape[0] == 0:
             error_msg = f"Query {self.query_name} retrieved 0 rows."
             self.log_error(error_msg)
             raise SingleValueResultException(error_message=error_msg)
         else:
-            if output_data_df.shape[1] == 1:
-                return output_data_df.iloc[0, 0]
+            if result_df.shape[1] == 1:
+                return result_df.iloc[0, 0]
             else:
                 self.log_warn(
                     f"Query {self.query_name} contains more than 1 column. The "
                     f"first column"
                     f"data is used for returning the single value."
                 )
-                return output_data_df.iloc[0, 0]
+                return result_df.iloc[0, 0]
 
 
 class QueryExecResults(list[QueryExecResult]):

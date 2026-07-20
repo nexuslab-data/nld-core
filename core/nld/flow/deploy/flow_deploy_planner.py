@@ -1,10 +1,28 @@
-import os
 import uuid
 from typing import Any, ClassVar, cast
 
 from nld.connector.base.connector import SQLDataConnector
+from nld.deploy.change_file_loader import (
+    ChangeFileError,
+    get_flow_renames,
+    group_backfill_defaults_by_structure,
+    group_field_renames_by_structure,
+    group_structure_renames_by_source,
+    group_structure_renames_by_target,
+    resolve_pending_change_files,
+    validate_backfill_default_targets,
+)
+from nld.deploy.change_file_models import PendingChangeFile
+from nld.deploy.change_log_manager import DeploymentChangeLogManager
+from nld.exceptions import NldRuntimeException
 from nld.flow.definition.flow_definition import (
     NamespacedDataFlowDefinition,
+)
+from nld.flow.deploy.flow_change_set import (
+    DeployLink,
+    DeployScope,
+    FlowChangeEntry,
+    FlowChangeSet,
 )
 from nld.flow.deploy.flow_definition_hash import (
     compute_flow_definition_hash,
@@ -13,14 +31,6 @@ from nld.flow.deploy.flow_definition_hash import (
     compute_flow_yaml_hash,
 )
 from nld.flow.deploy.flow_deploy_diff import FlowDeployAction, FlowHashChanges
-from nld.flow.deploy.flow_deploy_manifest import (
-    BackfillStrategy,
-    DeployLink,
-    DeployManifest,
-    DeployScope,
-    FlowDeployEntry,
-    StructureDeployEntry,
-)
 from nld.flow.deploy.flow_deploy_metadata_manager import FlowDeployMetadataManager
 from nld.flow.deploy.flow_deploy_metadata_models import FlowDeployMetadataRow
 from nld.flow.graph.data_flow_graph import (
@@ -31,30 +41,41 @@ from nld.flow.graph.data_flow_graph import (
 from nld.flow.graph.scoped_data_flow_graph import ScopedDataFlowGraph
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
 from nld.pydantic import NldNamespace
-from nld.structure.deploy import StructureDeployManager
-from nld.structure.deploy.structure_deploy_manifest import StructureDeployAction
-from nld.structure.deploy.structure_diff import DiffAction, FieldDiff
+from nld.pydantic.namespace import build_entity_key
+from nld.service import EntityTypeNames
+from nld.structure.deploy import StructureMetadataBackendManager
+from nld.structure.deploy.deploy_target_factory import StructureDeployTargetFactory
+from nld.structure.deploy.structure_change import (
+    StructureChangeEntry,
+    StructureDeployAction,
+)
+from nld.structure.deploy.structure_drift import DeploymentDriftError
 from nld.task.base import StandardTask
+from nld.utils import resolve_variables
 from nld.utils.datetime_util import get_current_datetime
-from nld.utils.yaml_util import dump_dict_to_yaml
 
 
 class FlowDeployPlanner(StandardTask):
-    """Computes a deployment plan (manifest) for flows.
+    """Computes the in-memory change set for a flow deployment.
 
     The planner resolves the scoped flows, builds a dependency graph
     using DataFlowGraph, computes hashes, compares against previously
-    deployed metadata, and produces a ``DeployManifest`` describing what
-    needs to change.
+    deployed metadata, and produces a ``FlowChangeSet`` describing what
+    needs to change. The change set is never persisted (design: the
+    diff is always recomputed against the live target).
     """
 
     init_params: ClassVar[list[str | ExecutionParameterDefinition]] = [
         ExecutionParameterDefinition(
-            name="downstream",
+            name="adopt",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
-            name="interactive",
+            name="allow_drift",
+            mandatory=False,
+        ),
+        ExecutionParameterDefinition(
+            name="downstream",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
@@ -66,7 +87,7 @@ class FlowDeployPlanner(StandardTask):
             mandatory=False,
         ),
         ExecutionParameterDefinition(
-            name="no_backfill",
+            name="rebuild",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
@@ -78,23 +99,24 @@ class FlowDeployPlanner(StandardTask):
 
     def __init__(
         self,
+        adopt: bool = False,
+        allow_drift: bool = False,
+        deploy_target_factory: StructureDeployTargetFactory | None = None,
         downstream: bool = False,
-        interactive: bool = True,
         metadata_manager: FlowDeployMetadataManager | None = None,
         name: str | None = None,
         namespace: str | None = None,
-        no_backfill: bool = False,
-        persist_manifest: bool = True,
+        rebuild: bool = False,
         upstream: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        self._adopt = adopt
+        self._allow_drift = allow_drift
         self._downstream = downstream
-        self._interactive = interactive
         self._name = name
         self._namespace = namespace
-        self._no_backfill = no_backfill
-        self._persist_manifest = persist_manifest
+        self._rebuild = rebuild
         self._upstream = upstream
 
         metadata_backend_connector_name = (
@@ -129,10 +151,46 @@ class FlowDeployPlanner(StandardTask):
             )
         self._metadata_schema = metadata_schema
 
-        self.execution_context.load_entities()
+        self._deploy_target_factory = deploy_target_factory
 
-    def run(self, **kwargs: Any) -> DeployManifest:
-        """Build and persist the deployment manifest."""
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+        )
+
+    @property
+    def deploy_target_factory(self) -> StructureDeployTargetFactory:
+        """The run's shared per-(connection, schema) manager factory.
+
+        The orchestrator passes the same factory to the executor so
+        applying reuses the managers — and prefetched snapshots —
+        planning already built. Built lazily on first use.
+        """
+        if self._deploy_target_factory is None:
+            self._deploy_target_factory = StructureDeployTargetFactory(
+                connector_resolver=self._resolve_sql_connector,
+                metadata_connector=self._metadata_backend_connector,
+                metadata_schema=self._metadata_schema,
+                variables=resolve_variables(
+                    project_variables=self.execution_context.project.variables,
+                ),
+            )
+        return self._deploy_target_factory
+
+    def _resolve_sql_connector(
+        self,
+        connection_name: str,
+    ) -> SQLDataConnector[Any]:
+        """Open (or reuse) a named SQL connector from the execution context."""
+        return cast(
+            SQLDataConnector[Any],
+            self.execution_context.get_data_connector(
+                connection_name,
+                open_connection=True,
+            ),
+        )
+
+    def run(self, **kwargs: Any) -> FlowChangeSet:
+        """Compute the in-memory change set for the resolved scope."""
         registry = self.execution_context.entity_registry
 
         # --- Step 1: Build the full flow graph and resolve scope
@@ -155,17 +213,30 @@ class FlowDeployPlanner(StandardTask):
             fid for fid in scoped_graph.topological_sort() if fid in scoped_flow_id_set
         ]
 
-        # --- Step 3: Load previously deployed metadata
+        # --- Step 3: Load previously deployed metadata + pending change files
         self._metadata_manager.ensure_metadata_tables(
+            metadata_schema=self._metadata_schema,
+        )
+        StructureMetadataBackendManager(
+            metadata_connector=self._metadata_backend_connector,
+        ).ensure_metadata_tables(
             metadata_schema=self._metadata_schema,
         )
         previously_deployed = self._metadata_manager.get_all_deployed_flows(
             metadata_schema=self._metadata_schema,
             namespace=self._namespace,
         )
+        pending_change_files = self._load_pending_change_files()
+        self._remap_renamed_flows(
+            previously_deployed=previously_deployed,
+            pending_change_files=pending_change_files,
+        )
+        self._validate_backfill_default_targets(
+            pending_change_files=pending_change_files,
+        )
 
         # --- Step 4: Build entries for each flow
-        entries: list[FlowDeployEntry] = []
+        entries: list[FlowChangeEntry] = []
         entities_root = self.execution_context.project.entities_root_folder_path
         entity_path = self.execution_context.project.entity_path
         additional_flow_task_types = (
@@ -191,6 +262,7 @@ class FlowDeployPlanner(StandardTask):
         # --- Step 4b: Build structure entries
         structure_entries = self._build_structure_entries(
             scoped_graph=scoped_graph,
+            pending_change_files=pending_change_files,
         )
 
         # --- Step 4c: Extract dependency links from graph
@@ -216,60 +288,46 @@ class FlowDeployPlanner(StandardTask):
         for key, metadata_row in previously_deployed.items():
             if key not in current_keys:
                 entries.append(
-                    FlowDeployEntry(
+                    FlowChangeEntry(
                         flow_name=metadata_row.flow_name,
                         namespace=metadata_row.namespace,
                         action=FlowDeployAction.REMOVED,
-                        backfill_strategy=BackfillStrategy.NONE,
                     )
                 )
 
-        # --- Step 6: Assemble manifest and persist
-        if not entries and not structure_entries:
-            self.log_info("No changes detected — manifest not generated")
-            return DeployManifest(
+        scope = DeployScope(
+            downstream=self._downstream,
+            flow_name=self._name,
+            namespace=self._namespace,
+            upstream=self._upstream,
+        )
+
+        if not entries and not structure_entries and not pending_change_files:
+            self.log_info("No changes detected — empty change set")
+            return FlowChangeSet(
+                changeset_id=str(uuid.uuid4()),
                 created_at=get_current_datetime(),
                 flows=[],
                 links=[],
-                manifest_id=str(uuid.uuid4()),
-                scope=DeployScope(
-                    downstream=self._downstream,
-                    flow_name=self._name,
-                    namespace=self._namespace,
-                    upstream=self._upstream,
-                ),
+                pending_change_files=[],
+                scope=scope,
                 structures=[],
             )
 
-        self._log_manifest_metrics(
+        self._log_change_set_metrics(
             flow_entries=entries,
             structure_entries=structure_entries,
         )
 
-        manifest = DeployManifest(
+        return FlowChangeSet(
+            changeset_id=str(uuid.uuid4()),
             created_at=get_current_datetime(),
             flows=entries,
             links=links,
-            manifest_id=str(uuid.uuid4()),
-            scope=DeployScope(
-                downstream=self._downstream,
-                flow_name=self._name,
-                namespace=self._namespace,
-                upstream=self._upstream,
-            ),
+            pending_change_files=pending_change_files,
+            scope=scope,
             structures=structure_entries,
         )
-
-        if self._persist_manifest:
-            manifest_path = self._write_manifest(
-                manifest=manifest,
-                entities_root_folder_path=(
-                    self.execution_context.project.entities_root_folder_path
-                ),
-            )
-            self.log_info(f"Deploy manifest written to {manifest_path}")
-
-        return manifest
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -313,8 +371,8 @@ class FlowDeployPlanner(StandardTask):
         entity_path: str | None,
         additional_flow_task_types: dict[str, str] | None,
         additional_task_paths: list[str] | None,
-    ) -> FlowDeployEntry:
-        """Build a single FlowDeployEntry with diff info."""
+    ) -> FlowChangeEntry:
+        """Build a single FlowChangeEntry with diff info."""
         flow_def = namespaced_flow.model
         namespace = namespaced_flow.namespace
         flow_key = self._build_flow_key(
@@ -365,26 +423,117 @@ class FlowDeployPlanner(StandardTask):
             action = FlowDeployAction.UNCHANGED
             hash_changes = None
 
-        # Default backfill strategy
-        if self._no_backfill or action == FlowDeployAction.UNCHANGED:
-            backfill_strategy = BackfillStrategy.NONE
-        else:
-            backfill_strategy = BackfillStrategy.FULL
-
-        return FlowDeployEntry(
+        return FlowChangeEntry(
             flow_name=flow_def.name,
             namespace=namespace,
             action=action,
-            backfill_strategy=backfill_strategy,
             hash_changes=hash_changes,
+        )
+
+    def _load_pending_change_files(self) -> list[PendingChangeFile]:
+        """Load the pending deployment change files for this target."""
+        change_log_manager = DeploymentChangeLogManager(
+            connector=self._metadata_backend_connector,
+        )
+        change_log_manager.ensure_table(
+            metadata_schema=self._metadata_schema,
+        )
+        pending = resolve_pending_change_files(
+            project_root_folder_path=(
+                self.execution_context.project.entities_root_folder_path
+            ),
+            applied_hashes_by_change_id=change_log_manager.get_applied_hashes(
+                metadata_schema=self._metadata_schema,
+            ),
+        )
+        if pending:
+            pending_ids = ", ".join(change.change_id for change in pending)
+            self.log_info(f"Pending deployment change file(s): {pending_ids}")
+        return pending
+
+    def _remap_renamed_flows(
+        self,
+        previously_deployed: dict[str, FlowDeployMetadataRow],
+        pending_change_files: list[PendingChangeFile],
+    ) -> None:
+        """Move recorded flow rows to their declared new names.
+
+        Without the remap a declared flow rename reads as REMOVED old
+        flow plus NEW flow; with it the new-name flow compares against
+        the old recorded hashes.
+        """
+        for directive in get_flow_renames(
+            pending_change_files=pending_change_files,
+        ):
+            if (
+                directive.from_name in previously_deployed
+                and directive.to not in previously_deployed
+            ):
+                moved_row = previously_deployed.pop(directive.from_name)
+                to_namespace, _, to_flow_name = directive.to.rpartition(".")
+                # Move the row to its new key AND carry its identity
+                # fields to the new name: an out-of-scope rename target
+                # is otherwise emitted as a REMOVED entry under its
+                # stale name, colliding with a flow reclaiming that name.
+                previously_deployed[directive.to] = moved_row.model_copy(
+                    update={
+                        "namespace": to_namespace or ".",
+                        "flow_name": to_flow_name,
+                    },
+                )
+
+    def _validate_backfill_default_targets(
+        self,
+        pending_change_files: list[PendingChangeFile],
+    ) -> None:
+        """Refuse a backfill_default directive that targets a view."""
+        backfill_defaults_by_structure = group_backfill_defaults_by_structure(
+            pending_change_files=pending_change_files,
+        )
+        if not backfill_defaults_by_structure:
+            return
+        validate_backfill_default_targets(
+            backfill_defaults_by_structure=backfill_defaults_by_structure,
+            entity_registry=self.execution_context.entity_registry,
+        )
+
+    @staticmethod
+    def _build_failed_entry(
+        structure_entity_id: str,
+        planning_error: str,
+    ) -> StructureChangeEntry:
+        """Build a FAILED entry for a structure whose planning raised.
+
+        Used before the desired structure could be resolved, so the
+        namespace and name are split from the graph entity id.
+        """
+        namespace, _, structure_name = structure_entity_id.rpartition(".")
+        return StructureChangeEntry(
+            action=StructureDeployAction.FAILED,
+            namespace=namespace or NldNamespace.ROOT_VALUE,
+            planning_error=planning_error,
+            structure_name=structure_name,
         )
 
     def _build_structure_entries(
         self,
         scoped_graph: ScopedDataFlowGraph,
-    ) -> list[StructureDeployEntry]:
+        pending_change_files: list[PendingChangeFile],
+    ) -> list[StructureChangeEntry]:
         """Build structure entries for all in-scope structures."""
-        structure_entries: list[StructureDeployEntry] = []
+        structure_entries: list[StructureChangeEntry] = []
+        renames_by_structure = group_field_renames_by_structure(
+            pending_change_files=pending_change_files,
+        )
+        structure_renames_by_target = group_structure_renames_by_target(
+            pending_change_files=pending_change_files,
+        )
+        structure_renames_by_source = group_structure_renames_by_source(
+            pending_change_files=pending_change_files,
+        )
+        backfill_defaults_by_structure = group_backfill_defaults_by_structure(
+            pending_change_files=pending_change_files,
+        )
 
         for structure_id in scoped_graph.scoped_structure_ids:
             # Find all in-scope flows that target this structure
@@ -407,9 +556,16 @@ class FlowDeployPlanner(StandardTask):
             try:
                 desired_structure = ref_flow_def.resolve_target_structure()
             except Exception as exc:
-                self.log_warn(
+                error_msg = (
                     f"Cannot resolve target_structure for structure "
                     f"'{structure_id}': {exc}"
+                )
+                self.log_error(error_msg)
+                structure_entries.append(
+                    self._build_failed_entry(
+                        structure_entity_id=strip_node_type_prefix(structure_id),
+                        planning_error=error_msg,
+                    ),
                 )
                 continue
 
@@ -432,82 +588,173 @@ class FlowDeployPlanner(StandardTask):
             connector_name = mapping.default_connection_name
 
             try:
-                connector = self.execution_context.get_data_connector(
-                    connector_name,
-                    open_connection=True,
+                deploy_manager = self.deploy_target_factory.get_manager(
+                    connection_name=connector_name,
+                    schema_name=mapping.schema_name,
                 )
             except Exception as exc:
-                self.log_warn(
+                error_msg = (
                     f"Cannot open connector '{connector_name}' for structure "
                     f"'{structure_id}': {exc}"
                 )
+                self.log_error(error_msg)
+                structure_entries.append(
+                    StructureChangeEntry(
+                        action=StructureDeployAction.FAILED,
+                        namespace=namespace,
+                        planning_error=error_msg,
+                        structure_name=desired_structure.name,
+                    ),
+                )
                 continue
 
-            schema_name = mapping.schema_name
-            sql_connector = cast(SQLDataConnector[Any], connector)
-            deploy_manager = StructureDeployManager(
-                structure_connector=sql_connector,
-                deploy_schema=schema_name,
-            )
+            if self._rebuild:
+                rebuild_statements = deploy_manager.compute_rebuild_statements(
+                    structure=desired_structure,
+                )
+                structure_entries.append(
+                    StructureChangeEntry(
+                        action=StructureDeployAction.CREATE,
+                        ddl_statements=[st.sql for st in rebuild_statements],
+                        namespace=namespace,
+                        structure_name=desired_structure.name,
+                    ),
+                )
+                continue
 
             try:
                 change_set = deploy_manager.compute_change_set(
                     structure=desired_structure,
+                    allow_drift=self._allow_drift or self._adopt,
+                    namespace=namespace,
+                    pending_field_renames=renames_by_structure.get(
+                        structure_entity_id,
+                        [],
+                    ),
+                    pending_structure_renames=structure_renames_by_target.get(
+                        structure_entity_id,
+                        [],
+                    ),
+                    pending_claiming_renames=[
+                        directive
+                        for directive in structure_renames_by_source.get(
+                            structure_entity_id,
+                            [],
+                        )
+                        if directive.to != structure_entity_id
+                    ],
                 )
-            except Exception:
+            except (ChangeFileError, DeploymentDriftError):
+                raise
+            except Exception as exc:
+                error_msg = (
+                    f"Change set computation failed for structure "
+                    f"'{structure_entity_id}': {exc}"
+                )
+                self.log_error(error_msg)
+                structure_entries.append(
+                    StructureChangeEntry(
+                        action=StructureDeployAction.FAILED,
+                        namespace=namespace,
+                        planning_error=error_msg,
+                        structure_name=desired_structure.name,
+                    ),
+                )
                 continue
 
             diff = change_set.diff
 
             if diff.is_new_table():
                 structure_action = StructureDeployAction.CREATE
-            elif diff.has_changes():
+            elif change_set.rebuild_required:
+                structure_action = StructureDeployAction.REBUILD
+            elif diff.has_changes() or change_set.statements:
+                # A pure declared rename yields no name-based diff but
+                # still carries the rename DDL to apply.
                 structure_action = StructureDeployAction.ALTER
+            elif structure_entity_id in backfill_defaults_by_structure:
+                # No schema diff, but a pending one-shot default fill
+                # still needs the structure entry so the executor
+                # reaches and applies it.
+                structure_action = StructureDeployAction.NONE
+            elif self._adopt:
+                # No schema diff either, but under --adopt the
+                # structure must still reach the executor: an
+                # out-of-band table that already matches the desired
+                # asset exactly has no diff to report, yet its schema
+                # was never recorded in the backend (bootstrap: the
+                # metadata tables start empty). Without this entry the
+                # executor never calls StructureDeployManager.deploy(),
+                # so _adopt_current_state() never runs and the
+                # structure keeps zero backend history forever — this
+                # is the common case adopt exists to handle.
+                structure_action = StructureDeployAction.NONE
             else:
                 continue
 
-            self._warn_rename_candidates(
-                structure_name=desired_structure.name,
-                field_diffs=diff.field_diffs,
-            )
+            view_flows_to_execute: list[str] = []
+            if change_set.dependent_views:
+                view_flows_to_execute = self._resolve_view_flows(
+                    view_names=list(reversed(change_set.dependent_views)),
+                    table_name=desired_structure.name,
+                )
 
             structure_entries.append(
-                StructureDeployEntry(
+                StructureChangeEntry(
                     action=structure_action,
                     characterisation_diffs=diff.characterisation_diffs,
+                    ddl_statements=[st.sql for st in change_set.statements],
+                    dependent_views=change_set.dependent_views,
                     field_diffs=diff.field_diffs,
                     namespace=namespace,
                     structure_name=desired_structure.name,
+                    view_flows_to_execute=view_flows_to_execute,
                 ),
             )
 
         return structure_entries
 
-    def _warn_rename_candidates(
+    def _resolve_view_flows(
         self,
-        structure_name: str,
-        field_diffs: list[FieldDiff],
-    ) -> None:
-        """Log a warning when simultaneous ADD and DROP suggest a possible rename.
+        view_names: list[str],
+        table_name: str,
+    ) -> list[str]:
+        """Map dependent views to the VIEW flows that recreate them.
 
-        Field renaming is not managed automatically. Users should
-        populate the ``field_naming_change_mapping`` attribute on the
-        StructureDeployEntry in the manifest if a rename is intended.
+        Recreation is a forced re-execution of the view-creating
+        flows, in dependency order (shallowest first). A dependent
+        view no flow manages cannot be recreated: the deploy fails
+        before anything is dropped.
         """
-        dropped = [fd for fd in field_diffs if fd.action == DiffAction.DROP]
-        added = [fd for fd in field_diffs if fd.action == DiffAction.ADD]
-
-        if not dropped or not added:
-            return
-
-        drop_names = ", ".join(fd.field_name for fd in dropped)
-        add_names = ", ".join(fd.field_name for fd in added)
-        self.log_warn(
-            f"Structure '{structure_name}': simultaneous DROP ({drop_names}) "
-            f"and ADD ({add_names}) detected. If this is a field rename, "
-            f"set the 'field_naming_change_mapping' attribute in the "
-            f"manifest entry."
+        registry = self.execution_context.entity_registry
+        all_flows = registry.get_data_flow_definition_dict(
+            namespace=self._namespace,
         )
+
+        flow_by_view_name: dict[str, str] = {}
+        for namespaced_flow in all_flows.values():
+            flow_def = namespaced_flow.model
+            if flow_def.write_strategy != "VIEW":
+                continue
+            try:
+                target_name = flow_def.resolve_target_structure().name
+            except Exception:
+                continue
+            flow_by_view_name[target_name] = self._build_flow_key(
+                namespace=namespaced_flow.namespace,
+                flow_name=flow_def.name,
+            )
+
+        unmanaged = [name for name in view_names if name not in flow_by_view_name]
+        if unmanaged:
+            unmanaged_names = ", ".join(unmanaged)
+            raise NldRuntimeException(
+                f"Changing structure '{table_name}' requires dropping "
+                f"dependent view(s) [{unmanaged_names}] that no nld VIEW "
+                "flow manages — they cannot be recreated automatically. "
+                "Drop or take over these views explicitly before deploying.",
+            )
+        return [flow_by_view_name[name] for name in view_names]
 
     @staticmethod
     def _extract_namespace_from_entity_id(
@@ -529,14 +776,12 @@ class FlowDeployPlanner(StandardTask):
         flow_name: str,
     ) -> str:
         """Build a unique key from namespace and flow name."""
-        if NldNamespace(namespace).is_root:
-            return flow_name
-        return f"{namespace}.{flow_name}"
+        return build_entity_key(namespace=namespace, entity_name=flow_name)
 
-    def _log_manifest_metrics(
+    def _log_change_set_metrics(
         self,
-        flow_entries: list[FlowDeployEntry],
-        structure_entries: list[StructureDeployEntry],
+        flow_entries: list[FlowChangeEntry],
+        structure_entries: list[StructureChangeEntry],
     ) -> None:
         """Log a summary of flow and structure counts by action."""
         flow_counts: dict[str, int] = {}
@@ -560,40 +805,3 @@ class FlowDeployPlanner(StandardTask):
             if structure_parts
             else "Structures: 0",
         )
-
-    def _write_manifest(
-        self,
-        manifest: DeployManifest,
-        entities_root_folder_path: str,
-    ) -> str:
-        """Serialize the manifest to a YAML file under .deployments/flows/."""
-        from nld.flow.deploy.flow_manifest_discovery import get_deployments_folder_path
-
-        deploy_dir = get_deployments_folder_path(
-            entities_root_folder_path=entities_root_folder_path,
-        )
-        os.makedirs(deploy_dir, exist_ok=True)
-
-        timestamp = manifest.created_at.strftime("%Y%m%d_%H%M%S")
-        scope_suffix = self._build_scope_suffix()
-        filename = f"{timestamp}_{scope_suffix}.yaml"
-        filepath = os.path.join(deploy_dir, filename)
-
-        manifest_dict = manifest.model_dump(
-            mode="json",
-            exclude_none=True,
-        )
-        dump_dict_to_yaml(
-            data=manifest_dict,
-            file_path=filepath,
-        )
-
-        return filepath
-
-    def _build_scope_suffix(self) -> str:
-        """Build a filename suffix from the deployment scope."""
-        if self._name is not None:
-            return f"flow_{self._name}"
-        if self._namespace is not None:
-            return f"ns_{self._namespace.replace('.', '_')}"
-        return "all"

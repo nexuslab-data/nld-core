@@ -12,7 +12,7 @@ from .field import Field
 from .field_characterisation import (
     FieldCharacterisation,
 )
-from .field_characterisation_def import (
+from .field_characterisation_definition import (
     FieldCharacterisationDefinitionNames,
     FieldCharacterisationDefinitions,
 )

@@ -6,12 +6,13 @@ from pydantic import ConfigDict, Field, field_validator
 from nld.connector.snowflake.snowflake_connector import (
     SnowflakeConnector,
 )
-from nld.flow.backend.snowflake.backend_mixin import SnowflakeBackendMixin
 from nld.flow.backend.snowflake.utils import SNOWFLAKE_BACKEND_INCREMENTAL_TABLE_PREFIX
+from nld.flow.incremental.backend.snowflake import SnowflakeIncrementalBackendMixin
 from nld.flow.incremental.impl.by_source_tst.backend.base_with_pydantic import (
     BySourceTstStateBackendManager,
 )
 from nld.flow.incremental.impl.by_source_tst.state import (
+    BySourceTstPlannedProcessingDetailledState,
     BySourceTstProcessingState,
     BySourceTstState,
 )
@@ -26,6 +27,10 @@ SNOWFLAKE_BY_SOURCE_TST_STATE_TABLE_NAME = (
 )
 SNOWFLAKE_BY_SOURCE_TST_PROCESSING_STATE_TABLE_NAME = (
     f"{SNOWFLAKE_BACKEND_INCREMENTAL_TABLE_PREFIX}_by_source_tst_processing_state"
+)
+SNOWFLAKE_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME = (
+    f"{SNOWFLAKE_BACKEND_INCREMENTAL_TABLE_PREFIX}"
+    "_plans_by_source_tst_planned_processing_state"
 )
 
 
@@ -91,8 +96,46 @@ class BySourceTstProcessingStateRow(NldBaseModel):
         return normalize_to_utc(value)
 
 
+class BySourceTstPlannedProcessingStateRow(NldBaseModel):
+    """Detail row for the by_source_tst planned-state slot.
+
+    Mirrors ``BySourceTstProcessingStateRow`` but keyed on
+    ``plan_state_uid`` (the plan is a precomputed proposal — no live
+    execution UID yet).
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "functional_key": {
+                "fields": ["plan_state_uid"],
+                "name": "fk_by_source_tst_planned_processing_state",
+            },
+        },
+    )
+
+    plan_state_uid: str = Field(json_schema_extra={"primary_key": True})
+    flow_namespace: str
+    flow_name: str
+    pull_from_timestamp: datetime.datetime | None = None
+    pull_to_timestamp: datetime.datetime | None = None
+    strategy: str
+
+    @field_validator(
+        "pull_from_timestamp",
+        "pull_to_timestamp",
+        mode="before",
+    )
+    @classmethod
+    def normalize_utc_timezone(
+        cls,
+        value: datetime.datetime | None,
+    ) -> datetime.datetime | None:
+        """Normalize naive or non-UTC datetimes from DB to UTC-aware."""
+        return normalize_to_utc(value)
+
+
 class SnowflakeBySourceTstStateBackendManager(
-    SnowflakeBackendMixin,
+    SnowflakeIncrementalBackendMixin,
     BySourceTstStateBackendManager[SnowflakeConnector],
 ):
     """
@@ -123,6 +166,7 @@ class SnowflakeBySourceTstStateBackendManager(
         self.pydantic_manager = self.backend_connector.get_model_manager()
 
         self._ensure_tables_exist()
+        self._ensure_planned_state_table_exists()
 
         self.log_event(
             IncrementalBackendEngineInitialized(
@@ -149,6 +193,57 @@ class SnowflakeBySourceTstStateBackendManager(
             table_exists="skip",
             track_timestamps=True,
             use_functional_key_as_primary=False,
+        )
+
+    def read_processing_state(self) -> BySourceTstProcessingState | None:
+        """Read the latest persisted processing state row for this flow."""
+        row = cast(
+            BySourceTstProcessingStateRow | None,
+            self.pydantic_manager.read_model(
+                model_class=BySourceTstProcessingStateRow,
+                schema_name=self.backend_schema_name,
+                table_name=SNOWFLAKE_BY_SOURCE_TST_PROCESSING_STATE_TABLE_NAME,
+                where_conditions={
+                    "flow_namespace": self.flow_namespace,
+                    "flow_name": self.flow_name,
+                },
+                order_by=["-processing_completed_at"],
+            ),
+        )
+        if row is None:
+            return None
+        return BySourceTstProcessingState(
+            flow_uid=row.flow_uid,
+            strategy=row.strategy,
+            pull_from_timestamp=row.pull_from_timestamp,
+            pull_to_timestamp=row.pull_to_timestamp,
+            processing_status=row.processing_status or "",
+            process_error_message=row.process_error_message,
+            processing_completed_at=row.processing_completed_at,
+        )
+
+    def read_post_processing_state(self) -> BySourceTstState | None:
+        """Read the current persisted post-processing state for this flow.
+
+        Returns the same data as ``read_current_state`` but returns
+        ``None`` when no row exists instead of an empty default state.
+        """
+        row = cast(
+            BySourceTstStateRow | None,
+            self.pydantic_manager.read_model(
+                model_class=BySourceTstStateRow,
+                schema_name=self.backend_schema_name,
+                table_name=SNOWFLAKE_BY_SOURCE_TST_STATE_TABLE_NAME,
+                where_conditions={
+                    "flow_namespace": self.flow_namespace,
+                    "flow_name": self.flow_name,
+                },
+            ),
+        )
+        if row is None:
+            return None
+        return BySourceTstState(
+            last_pull_to_timestamp=row.last_pull_to_timestamp,
         )
 
     def read_current_state(self) -> BySourceTstState:
@@ -213,4 +308,62 @@ class SnowflakeBySourceTstStateBackendManager(
             conflict_fields=["flow_namespace", "flow_name"],
             commit=False,
             track_timestamps=True,
+        )
+
+    def _ensure_planned_processing_state_table_exists(self) -> None:
+        """Create the by_source_tst planned processing-state table if absent."""
+        self.pydantic_manager.create_table(
+            model_class=BySourceTstPlannedProcessingStateRow,
+            schema_name=self.backend_schema_name,
+            table_name=SNOWFLAKE_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME,
+            table_exists="skip",
+            track_timestamps=True,
+            use_functional_key_as_primary=True,
+        )
+
+    def write_planned_processing_state(
+        self,
+        plan_state_uid: str,
+        detailled_state: BySourceTstPlannedProcessingDetailledState,
+    ) -> None:
+        """Persist the by_source_tst planned-state row for a new PLANNED plan."""
+        row = BySourceTstPlannedProcessingStateRow(
+            plan_state_uid=plan_state_uid,
+            flow_namespace=self.flow_namespace,
+            flow_name=self.flow_name,
+            pull_from_timestamp=detailled_state.pull_from_timestamp,
+            pull_to_timestamp=detailled_state.pull_to_timestamp,
+            strategy=detailled_state.strategy,
+        )
+        self.pydantic_manager.upsert_model(
+            model=row,
+            schema_name=self.backend_schema_name,
+            table_name=SNOWFLAKE_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME,
+            conflict_fields=["plan_state_uid"],
+            commit=True,
+            track_timestamps=True,
+        )
+
+    def read_planned_processing_state(
+        self,
+        plan_state_uid: str,
+    ) -> BySourceTstPlannedProcessingDetailledState | None:
+        """Reconstruct the by_source_tst planned detail from its row."""
+        rows = cast(
+            list[BySourceTstPlannedProcessingStateRow],
+            self.pydantic_manager.read_models(
+                model_class=BySourceTstPlannedProcessingStateRow,
+                schema_name=self.backend_schema_name,
+                table_name=SNOWFLAKE_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME,
+                where_conditions={"plan_state_uid": plan_state_uid},
+            ),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return BySourceTstPlannedProcessingDetailledState(
+            plan_state_uid=row.plan_state_uid,
+            strategy=row.strategy,
+            pull_from_timestamp=row.pull_from_timestamp,
+            pull_to_timestamp=row.pull_to_timestamp,
         )

@@ -8,13 +8,16 @@ from nld.flow.sql import SQLRenderingExecutionTask
 from nld.logging import StandardNldFormatter
 from nld.structure.task import (
     StructureAdaptTask,
-    StructureDeployExecuteTask,
-    StructureDeployPlanTask,
     StructureInfoTask,
+    StructureListTask,
+    StructureValidateTask,
 )
 from nld.task.task_utils import execute_task
 
 from . import params_structure
+from .main_structure_audit import audit
+from .main_structure_deploy import deploy
+from .main_structure_model import model
 
 
 @click.group(name="structure", no_args_is_help=True)
@@ -55,47 +58,46 @@ def structure_info(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
     return execute_task(StructureInfoTask)  # type: ignore[no-any-return]
 
 
-@click.group(name="deploy", no_args_is_help=True)
-@click.pass_context
-def deploy(ctx: click.Context, /, **kwargs: Any) -> None:
-    """Deploy commands for structures."""
+@requires_wrapper.nld_command(
+    group=structure,
+    command_name="list",
+    logger_formatter=StandardNldFormatter(),
+    silent_completion=True,
+    with_project=True,
+)
+@params_structure.structure_namespace
+@params_structure.property_filter
+@params_structure.tag_filter
+@params.nld_root_folder_path
+def structure_list(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """List structures, optionally filtered by --property key=value and --tag."""
+    return execute_task(StructureListTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command(
+    group=structure,
+    command_name="validate",
+    logger_formatter=StandardNldFormatter(),
+    silent_completion=True,
+    with_project=True,
+)
+@params_structure.structure_name_optional
+@params_structure.structure_namespace
+@params_structure.display_format
+@params.nld_root_folder_path
+def structure_validate(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """Validate field characterisation pertinence for structures.
+
+    Validates one structure when --name is given, otherwise every structure
+    visible from --namespace. Each field characterisation is checked against the
+    known catalogue (built-in defaults merged with project definitions).
+    """
+    return execute_task(StructureValidateTask)  # type: ignore[no-any-return]
 
 
 structure.add_command(deploy)
-
-
-@requires_wrapper.nld_command(
-    group=deploy,
-    command_name="plan",
-    logger_formatter=StandardNldFormatter(),
-    with_project=True,
-)
-@params_structure.structure_name_optional
-@params_structure.structure_namespace
-@params.nld_root_folder_path
-def deploy_plan(ctx: Any, **kwargs: Any) -> Any:
-    """Compute a deployment plan and write a manifest."""
-    return execute_task(StructureDeployPlanTask)
-
-
-@requires_wrapper.nld_command(
-    group=deploy,
-    command_name="execute",
-    logger_formatter=StandardNldFormatter(),
-    with_project=True,
-)
-@params_structure.structure_name_optional
-@params_structure.structure_namespace
-@params_structure.from_plan
-@params_structure.manifest_path
-@params.nld_root_folder_path
-def deploy_execute(ctx: Any, **kwargs: Any) -> Any:
-    """Execute structure deployment.
-
-    When --from-plan is provided, executes pending manifests.
-    Otherwise, computes diffs and deploys inline.
-    """
-    return execute_task(StructureDeployExecuteTask)
+structure.add_command(model)
+structure.add_command(audit)
 
 
 @requires_wrapper.nld_command(

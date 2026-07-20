@@ -18,6 +18,7 @@ from .logic import (
     ByKeySourceFullFlowIncrementalParams,
 )
 from .state import (
+    ByKeyPlannedProcessingDetailledState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySingleKeyProcessingState,
@@ -47,6 +48,7 @@ class ByKeyStateManager(
             ByKeySourceState,
             ByKeyProcessingState,
             ByKeyPlannedProcessingState,
+            ByKeyPlannedProcessingDetailledState,
         ]
         | None = None,
         secondary_incremental_state_backend_manager: IncrementalBackendStateManager[
@@ -55,6 +57,7 @@ class ByKeyStateManager(
             ByKeySourceState,
             ByKeyProcessingState,
             ByKeyPlannedProcessingState,
+            ByKeyPlannedProcessingDetailledState,
         ]
         | None = None,
         parameters: dict[str, Any] | None = None,
@@ -102,15 +105,20 @@ class ByKeyStateManager(
         Determine processing state based on incremental and source state.
 
         Keys to consider are determined with the following rule:
-        - Key latest incremental should not have SUCCEEDED status
+        - Key latest incremental should not have a terminal status
+          (SUCCEEDED or PERMANENTLY_EXCLUDED)
         - Key should be in source state (in the list of keys to be retrieved)
+
+        FULL and explicit-keys BACKFILL re-attempt terminal keys on purpose:
+        they are the resurrection paths for PERMANENTLY_EXCLUDED entries.
         """
         assert self.source_state is not None
         self.incremental_parameters: ByKeySourceFullFlowIncrementalParams
         if self.strategy in [FlowLoadingStrategies.DELTA]:
             assert self.latest_incremental_state is not None
+            terminal_keys = self.latest_incremental_state.get_terminal_keys()
             for key, flow_source_state in self.source_state.keys.items():
-                if key not in self.latest_incremental_state.get_succeeded_keys():
+                if key not in terminal_keys:
                     flow_processing_state = ByKeySingleKeyProcessingState(
                         name=key,
                         parameters=flow_source_state.parameters,
@@ -119,10 +127,10 @@ class ByKeyStateManager(
                     self.processing_state.keys.update({key: flow_processing_state})
         elif self.strategy in [FlowLoadingStrategies.BACKFILL_DELTA]:
             assert self.latest_incremental_state is not None
-            succeeded_keys = self.latest_incremental_state.get_succeeded_keys()
-            self._apply_backfill_filtering(exclude_succeeded_keys=succeeded_keys)
+            terminal_keys = self.latest_incremental_state.get_terminal_keys()
+            self._apply_backfill_filtering(exclude_keys=terminal_keys)
         elif self.strategy in [FlowLoadingStrategies.BACKFILL]:
-            self._apply_backfill_filtering(exclude_succeeded_keys=None)
+            self._apply_backfill_filtering(exclude_keys=None)
         elif self.strategy in [FlowLoadingStrategies.FULL]:
             for key, flow_source_state in self.source_state.keys.items():
                 flow_processing_state = ByKeySingleKeyProcessingState(
@@ -139,30 +147,25 @@ class ByKeyStateManager(
 
     def _apply_backfill_filtering(
         self,
-        exclude_succeeded_keys: dict[str, Any] | None,
+        exclude_keys: dict[str, Any] | None,
     ) -> None:
         """Apply backfill key filtering with optional delta exclusion.
 
         Args:
-            exclude_succeeded_keys: If provided, keys in this dict are excluded
-                from processing (used by BACKFILL_DELTA to skip
-                already-succeeded keys).
+            exclude_keys: If provided, keys in this dict are excluded from
+                processing (used by BACKFILL_DELTA to skip keys with a
+                terminal status — SUCCEEDED or PERMANENTLY_EXCLUDED).
         """
         assert self.source_state is not None
 
         if self.incremental_parameters.limit is not None:
             for key, flow_source_state in self.source_state.keys.items():
-                should_exclude = (
-                    exclude_succeeded_keys is not None and key in exclude_succeeded_keys
-                )
                 flow_processing_state = ByKeySingleKeyProcessingState(
                     name=key,
                     parameters=flow_source_state.parameters,
                     processing_status=IncrementalProcessingStatus.EXCLUDED,
                 )
                 self.processing_state.keys.update({key: flow_processing_state})
-                if should_exclude:
-                    continue
             if self.incremental_parameters.limit > 0:
                 count = 0
                 for processing_state in self.processing_state.keys.values():
@@ -171,8 +174,8 @@ class ByKeyStateManager(
                         and count < self.incremental_parameters.limit
                     ):
                         if (
-                            exclude_succeeded_keys is None
-                            or processing_state.name not in exclude_succeeded_keys
+                            exclude_keys is None
+                            or processing_state.name not in exclude_keys
                         ):
                             processing_state.set_to_be_processed()
                             count += 1
@@ -187,10 +190,7 @@ class ByKeyStateManager(
                 self.processing_state.keys.update({key: flow_processing_state})
             for key in self.incremental_parameters.keys:
                 if self.processing_state.has_key(key):
-                    should_exclude = (
-                        exclude_succeeded_keys is not None
-                        and key in exclude_succeeded_keys
-                    )
+                    should_exclude = exclude_keys is not None and key in exclude_keys
                     if not should_exclude:
                         self.processing_state.keys[key].set_to_be_processed()
                 else:
@@ -212,6 +212,8 @@ class ByKeyStateManager(
             post_processing_status = IncrementalStateStatus.SUCCEEDED
         elif processing_state.failed():
             post_processing_status = IncrementalStateStatus.FAILED
+        elif processing_state.permanently_excluded():
+            post_processing_status = IncrementalStateStatus.PERMANENTLY_EXCLUDED
         else:
             post_processing_status = IncrementalStateStatus.NOT_PROCESSED
 
@@ -222,6 +224,20 @@ class ByKeyStateManager(
                 # If the key already exists in the state and was not processed,
                 # nothing should be done
                 pass
+            elif post_processing_status == IncrementalStateStatus.PERMANENTLY_EXCLUDED:
+                # The source authoritatively answered "this key does not exist".
+                # A key that once SUCCEEDED and is now absent was deleted at the
+                # source — that is the existing DELETED semantic;
+                # PERMANENTLY_EXCLUDED is reserved for keys that never existed.
+                if state.status == IncrementalStateStatus.SUCCEEDED:
+                    state.status = IncrementalStateStatus.DELETED
+                    state.source_deleted_at = processing_state.processing_completed_at
+                else:
+                    state.status = IncrementalStateStatus.PERMANENTLY_EXCLUDED
+                state.last_processed_at = processing_state.processing_completed_at
+                state.last_process_status = post_processing_status
+                state.last_process_error_message = None
+                state.parameters = processing_state.parameters
             elif post_processing_status == IncrementalStateStatus.FAILED:
                 # If the current process failed but the process succeeded once,
                 # the status is kept on succeeded

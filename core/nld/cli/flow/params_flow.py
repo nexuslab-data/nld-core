@@ -54,16 +54,58 @@ deploy_upstream = click.option(
     help="Include upstream flows in the deployment scope",
 )
 
-plan_only = click.option(
-    "--plan-only",
+deploy_preview = click.option(
+    "--preview",
     is_flag=True,
     default=False,
     help=(
-        "Generate the deployment plan without executing it. In the "
-        "default in-memory mode of `deploy execute`, this writes a "
-        "manifest YAML to .deployments/flows/ and exits — equivalent "
-        "to `nld flow deploy plan`. Mutually exclusive with --from-plan "
-        "(and with --manifest-path, which implies --from-plan)."
+        "Compute and print the change set (including the structure "
+        "DDL) against the live target without applying anything. "
+        "Exits with code 2 when changes are pending, 0 when the "
+        "target is in sync."
+    ),
+)
+
+deploy_output = click.option(
+    "--output",
+    "output",
+    type=str,
+    default=None,
+    help=(
+        "With --preview, also write the computed change set as JSON "
+        "to this file path — for CI gates and PR bots that must not "
+        "scrape log lines."
+    ),
+)
+
+deploy_adopt = click.option(
+    "--adopt",
+    is_flag=True,
+    default=False,
+    help=(
+        "On drift: record the live schema as a flagged state-refresh "
+        "baseline, then deploy against it."
+    ),
+)
+
+deploy_allow_drift = click.option(
+    "--allow-drift",
+    "allow_drift",
+    is_flag=True,
+    default=False,
+    help=(
+        "On drift: deploy against the live schema anyway, without "
+        "recording a new baseline."
+    ),
+)
+
+deploy_rebuild = click.option(
+    "--rebuild",
+    is_flag=True,
+    default=False,
+    help=(
+        "Recreate the in-scope structures from the assets, ignoring "
+        "both the recorded and the live state (destructive)."
     ),
 )
 
@@ -92,45 +134,6 @@ full = click.option(
     is_flag=True,
     default=False,
     help="Force FULL loading strategy.",
-)
-
-interactive = click.option(
-    "--interactive/--no-interactive",
-    default=True,
-    help="Enable interactive prompts for rename candidates",
-)
-
-no_backfill = click.option(
-    "--no-backfill",
-    is_flag=True,
-    default=False,
-    help=(
-        "Suppress backfill for all flows. With --from-plan, overrides "
-        "the manifest's backfill_strategy entries. In the default "
-        "in-memory mode of `deploy execute`, no-backfill is already "
-        "applied by default — pass --with-backfill to opt in."
-    ),
-)
-
-with_backfill = click.option(
-    "--with-backfill",
-    is_flag=True,
-    default=False,
-    help=(
-        "Run backfills as part of the default in-memory `deploy execute` "
-        "mode. By default, no-backfill is applied to avoid rewriting "
-        "historical data on a one-shot deploy. Mutually exclusive with "
-        "--from-plan and --no-backfill."
-    ),
-)
-
-manifest_path = click.option(
-    "--manifest-path",
-    required=False,
-    default=None,
-    type=click.Path(exists=True),
-    help="Path to a specific deploy manifest YAML file. "
-    "If omitted, all pending manifests in .deployments/flows/ are executed.",
 )
 
 output_format = click.option(
@@ -187,18 +190,6 @@ planned_state_strategy = click.option(
         "the latest incremental state, recomputing otherwise; 'recompute' "
         "ignores any plan; 'trust' adopts the plan as-is without validation; "
         "'strict' fails when no plan exists or the plan is stale."
-    ),
-)
-
-from_plan = click.option(
-    "--from-plan",
-    is_flag=True,
-    default=False,
-    help=(
-        "Apply pre-generated manifests instead of planning in memory. "
-        "Loads either the file passed to --manifest-path, or all pending "
-        "manifests in .deployments/flows/ (sorted). Implied when "
-        "--manifest-path is provided."
     ),
 )
 
@@ -278,14 +269,14 @@ state_steps_latest = click.option(
     help="Load steps from the latest execution.",
 )
 
-state_include_post_processing = click.option(
-    "--include-post-processing",
-    "include_post_processing",
+state_processing_only = click.option(
+    "--processing-only",
+    "processing_only",
     is_flag=True,
     default=False,
     help=(
-        "Also include the authoritative post-processing state in the "
-        "payload (returned as an object with both states)."
+        "Show only the last run's processing state instead of the current "
+        "authoritative state."
     ),
 )
 
@@ -339,14 +330,12 @@ state_compute_source_request_authorized = click.option(
     ),
 )
 
-deploy_execute_interactive = click.option(
+deploy_interactive = click.option(
     "--interactive/--no-interactive",
     "interactive",
     default=True,
     help=(
-        "When the in-memory plan mode is used (the default), prompt the "
-        "user to confirm before applying any DDL or backfill. "
-        "--no-interactive skips the prompt — useful in CI pipelines. "
-        "Has no effect when --from-plan is set."
+        "Prompt the user to confirm before applying any DDL. "
+        "--no-interactive skips the prompt — useful in CI pipelines."
     ),
 )

@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from nld.connector.base.connector import SQLDataConnector
-from nld.connector.base.exceptions import SingleValueResultException
 from nld.exceptions import NldRuntimeException
 from nld.structure.deploy.structure_metadata_models import (
+    StructureDeployRunRow,
     StructureHistoryRow,
     StructureMetadataRow,
 )
@@ -17,6 +17,7 @@ from nld.structure.deploy.structure_schema_history import (
 
 NLD_STRUCTURE_STATE_TABLE = "_nld_structure_state"
 NLD_STRUCTURE_HISTORY_TABLE = "_nld_structure_history"
+NLD_STRUCTURE_DEPLOY_RUN_TABLE = "_nld_structure_deployment"
 
 
 class StructureMetadataBackendManager:
@@ -32,7 +33,6 @@ class StructureMetadataBackendManager:
         metadata_connector: SQLDataConnector[Any],
     ) -> None:
         self._connector = metadata_connector
-        self._ddl_builder = metadata_connector.get_ddl_builder()
         self._model_manager = metadata_connector.get_model_manager()
 
     def ensure_metadata_tables(
@@ -67,6 +67,55 @@ class StructureMetadataBackendManager:
                 table_exists="skip",
                 track_timestamps=True,
             )
+
+    def ensure_deploy_run_table(
+        self,
+        metadata_schema: str,
+    ) -> None:
+        """Create the structure-deploy run table when missing.
+
+        Ensured only by the ``nld structure deploy`` path — the flow
+        path records its runs in its own deployment table.
+        """
+        run_table_exists = self._table_exists(
+            schema=metadata_schema,
+            table=NLD_STRUCTURE_DEPLOY_RUN_TABLE,
+        )
+        if not run_table_exists:
+            self._model_manager.create_table(
+                model_class=StructureDeployRunRow,
+                schema_name=metadata_schema,
+                table_name=NLD_STRUCTURE_DEPLOY_RUN_TABLE,
+                table_exists="skip",
+                track_timestamps=True,
+            )
+
+    def insert_deploy_run(
+        self,
+        metadata_schema: str,
+        row: StructureDeployRunRow,
+    ) -> None:
+        """Insert the run-level record at the start of a deploy run."""
+        self._model_manager.insert_model(
+            model=row,
+            schema_name=metadata_schema,
+            table_name=NLD_STRUCTURE_DEPLOY_RUN_TABLE,
+            track_timestamps=True,
+        )
+
+    def update_deploy_run(
+        self,
+        metadata_schema: str,
+        row: StructureDeployRunRow,
+    ) -> None:
+        """Write the run's final status and counters."""
+        self._model_manager.upsert_model(
+            model=row,
+            schema_name=metadata_schema,
+            table_name=NLD_STRUCTURE_DEPLOY_RUN_TABLE,
+            conflict_fields=["deployment_id"],
+            track_timestamps=True,
+        )
 
     def write_history_record(
         self,
@@ -132,6 +181,7 @@ class StructureMetadataBackendManager:
 
         history_row = StructureHistoryRow(
             deployment_id=str(uuid.uuid4()),
+            uid=row.uid,
             namespace=row.namespace,
             object_path=row.object_path,
             structure_name=row.structure_name,
@@ -152,57 +202,39 @@ class StructureMetadataBackendManager:
             track_timestamps=True,
         )
 
-    def get_previous_deployment_id(
+    def read_state_row(
         self,
         metadata_schema: str,
         structure_name: str,
         namespace: str,
-    ) -> str | None:
-        """Retrieve the latest deployment ID for a structure."""
-        row = self._read_metadata_row(
+    ) -> StructureMetadataRow | None:
+        """Read the current recorded state row of a structure."""
+        return self._read_metadata_row(
             metadata_schema=metadata_schema,
             structure_name=structure_name,
             namespace=namespace,
         )
-        if row is None:
-            return None
-        return row.deployment_id
 
-    def get_previous_structure_snapshot(
+    def read_all_state_rows(
         self,
         metadata_schema: str,
-        structure_name: str,
-        namespace: str,
-    ) -> str | None:
-        """Retrieve the latest structure definition snapshot for a structure."""
-        row = self._read_metadata_row(
-            metadata_schema=metadata_schema,
-            structure_name=structure_name,
-            namespace=namespace,
-        )
-        if row is None:
-            return None
-        return row.structure_snapshot
+    ) -> dict[tuple[str, str], StructureMetadataRow]:
+        """Read every non-deleted state row in the schema, in one query.
 
-    def get_previous_hashes(
-        self,
-        metadata_schema: str,
-        structure_name: str,
-        namespace: str,
-    ) -> tuple[str | None, str | None]:
-        """Retrieve the previous structure_schema_hash and structure_hash.
-
-        Returns a tuple of (structure_schema_hash, structure_hash).
-        Both are None if no previous deployment exists.
+        Keyed by ``(namespace, structure_name)`` — replaces the
+        per-structure ``read_state_row`` calls a deploy loop would
+        otherwise issue once per call site per structure.
         """
-        row = self._read_metadata_row(
-            metadata_schema=metadata_schema,
-            structure_name=structure_name,
-            namespace=namespace,
+        rows = cast(
+            "list[StructureMetadataRow]",
+            self._model_manager.read_models(
+                model_class=StructureMetadataRow,
+                schema_name=metadata_schema,
+                table_name=NLD_STRUCTURE_STATE_TABLE,
+                where_conditions={"fl_deleted": False},
+            ),
         )
-        if row is None:
-            return None, None
-        return row.structure_schema_hash, row.structure_hash
+        return {(row.namespace, row.structure_name): row for row in rows}
 
     def _read_metadata_row(
         self,
@@ -228,13 +260,7 @@ class StructureMetadataBackendManager:
         schema: str,
     ) -> None:
         """Verify the schema exists, raising an error if it does not."""
-        sql = self._ddl_builder.build_schema_exists_query(schema=schema)
-        result = self._connector.execute_query(sql)
-        try:
-            schema_exists = bool(result.get_output_data_single_value())
-        except SingleValueResultException:
-            schema_exists = False
-        if not schema_exists:
+        if not self._connector.does_schema_exist(schema=schema):
             msg = (
                 f"Schema '{schema}' does not exist. "
                 f"Create the schema before running structure deploy."
@@ -246,13 +272,5 @@ class StructureMetadataBackendManager:
         schema: str,
         table: str,
     ) -> bool:
-        """Check if a table exists using information_schema."""
-        sql = self._ddl_builder.build_exists_query(
-            schema=schema,
-            table=table,
-        )
-        result = self._connector.execute_query(sql)
-        try:
-            return bool(result.get_output_data_single_value())
-        except SingleValueResultException:
-            return False
+        """Check if a table exists via the standard connector method."""
+        return self._connector.does_object_exist(f"{schema}.{table}")

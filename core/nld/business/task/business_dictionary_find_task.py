@@ -5,7 +5,7 @@ from typing import Any
 
 from nld.business import find_terms
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
-from nld.service import FileOutputService
+from nld.service import EntityTypeNames, FileOutputService
 from nld.task import BaseRunStatus, StandardTask
 from nld.task.context import NldExecutionContext
 
@@ -64,7 +64,9 @@ class BusinessDictionaryFindTask(StandardTask):
     def run(self, **kwargs: Any) -> bool:
         run_status = BaseRunStatus.SUCCESS.value
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.BUSINESS_DICTIONARY]
+        )
         registry = self.execution_context.entity_registry
 
         matches = find_terms(

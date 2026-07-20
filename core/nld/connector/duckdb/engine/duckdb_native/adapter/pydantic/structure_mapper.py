@@ -4,7 +4,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, cast, get_args, get_origin
 
-from nld.connector.duckdb.duckdb_data_type import DuckDBDataTypes
+from nld.connector.duckdb.connector_definition import DuckDBDataTypes
 from nld.pydantic import BasePydanticStructureMapper, NldBaseModel
 from nld.structure import (
     Field,

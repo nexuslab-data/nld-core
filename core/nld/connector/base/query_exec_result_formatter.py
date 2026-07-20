@@ -124,7 +124,7 @@ class QueryExecResultFormatter:
             if columns:
                 lines.append("  columns: " + ", ".join(columns))
 
-        data_frame = result.get_output_data_as_df()
+        data_frame = result.get_result_df()
         if not data_frame.empty:
             preview = data_frame.head(self.preview_rows)
             preview_text = preview.to_string(index=False)

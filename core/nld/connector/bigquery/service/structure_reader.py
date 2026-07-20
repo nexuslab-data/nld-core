@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from nld.connector.base import QueryWrapper, SQLConnectorStructureReader
+from nld.connector.base.structure_reader import (
+    escape_sql_literal,
+    normalize_structure_type,
+    parse_view_dependencies,
+)
 from nld.connector.bigquery.bigquery_connector import BigQueryConnector
 from nld.connector.bigquery.bigquery_structure import BigQueryStructure
 from nld.structure import (
@@ -11,11 +16,6 @@ from nld.structure import (
     Structure,
     StructureCharacterisation,
 )
-
-
-def _escape_sql_literal(value: str) -> str:
-    """Escape a SQL string literal to prevent SQL injection."""
-    return value.replace("'", "''")
 
 
 class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
@@ -97,6 +97,38 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
 
         return structures
 
+    def get_all_dependent_views(
+        self,
+        schema: str,
+    ) -> dict[str, list[str]]:
+        """Return every direct view-dependency edge, parsed from definitions.
+
+        BigQuery has no queryable view-dependency catalog, so the
+        edges are derived by parsing INFORMATION_SCHEMA.VIEWS
+        definitions.
+        """
+        project = self.active_database
+        project_prefix = f"`{escape_sql_literal(project)}`." if project else ""
+        query = (
+            "SELECT table_name, view_definition FROM "
+            f"{project_prefix}`{escape_sql_literal(schema)}`"
+            ".INFORMATION_SCHEMA.VIEWS"
+        )
+        result = self._connector.execute_query(query)
+        result.raise_on_error(f"BigQuery view listing failed: {query}")
+        df = result.get_result_df()
+        if df.empty:
+            return {}
+        view_definitions = {
+            str(row["table_name"]).lower(): str(row["view_definition"])
+            for _, row in df.iterrows()
+            if row.get("view_definition")
+        }
+        return parse_view_dependencies(
+            view_definitions=view_definitions,
+            dialect="bigquery",
+        )
+
     def _get_tables_and_views(
         self,
         project: str | None,
@@ -104,8 +136,8 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
         object_name: str | None,
     ) -> list[dict[str, Any]]:
         """Retrieve the list of tables and views from the dataset."""
-        safe_dataset = _escape_sql_literal(dataset)
-        project_prefix = f"`{_escape_sql_literal(project)}`." if project else ""
+        safe_dataset = escape_sql_literal(dataset)
+        project_prefix = f"`{escape_sql_literal(project)}`." if project else ""
 
         # ``object_name`` is interpolated into a SQL string literal, so
         # it MUST be escaped with ``_escape_sql_literal`` (doubling any
@@ -113,7 +145,7 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
         # would let a value containing ``'`` break out of the literal.
         where_clause = ""
         if object_name:
-            safe_object_name = _escape_sql_literal(object_name)
+            safe_object_name = escape_sql_literal(object_name)
             where_clause = f"WHERE table_name = '{safe_object_name}'"
 
         query = f"""
@@ -124,7 +156,7 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
         """
 
         result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        df = result.get_result_df()
         if df.empty:
             return []
         return df.to_dict("records")  # type: ignore[return-value]
@@ -139,11 +171,11 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
         if not table_names:
             return {}
 
-        safe_dataset = _escape_sql_literal(dataset)
-        project_prefix = f"`{_escape_sql_literal(project)}`." if project else ""
+        safe_dataset = escape_sql_literal(dataset)
+        project_prefix = f"`{escape_sql_literal(project)}`." if project else ""
 
         table_filter = ", ".join(
-            f"'{_escape_sql_literal(name)}'" for name in table_names
+            f"'{escape_sql_literal(name)}'" for name in table_names
         )
 
         # BigQuery's ``INFORMATION_SCHEMA.COLUMNS`` does not expose
@@ -165,7 +197,7 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
         """
 
         result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        df = result.get_result_df()
 
         columns_by_table: dict[str, list[dict[str, Any]]] = {}
         rows: list[dict[str, Any]] = df.to_dict("records")  # type: ignore[assignment]
@@ -186,7 +218,7 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
     ) -> BigQueryStructure:
         """Build a Structure object from extracted metadata."""
         table_name = table_info["table_name"]
-        table_type = self._normalize_structure_type(table_info["table_type"])
+        table_type = normalize_structure_type(table_info["table_type"])
 
         fields: dict[str, Field] = {}
         for col in columns:
@@ -263,15 +295,3 @@ class BigQueryStructureReader(SQLConnectorStructureReader[BigQueryConnector]):
             except ValueError:
                 precision = 0
         return base, length, precision
-
-    def _normalize_structure_type(self, raw_type: str) -> str:
-        """Normalize a BigQuery structure type.
-
-        Maps BigQuery INFORMATION_SCHEMA type names to standard
-        NLD structure types.
-        """
-        bq_structure_type_mapping = {
-            "BASE TABLE": "TABLE",
-        }
-        upper_type = raw_type.upper() if raw_type else ""
-        return bq_structure_type_mapping.get(upper_type, upper_type)

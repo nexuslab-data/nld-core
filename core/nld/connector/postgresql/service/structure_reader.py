@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from nld.connector.base import QueryWrapper, SQLConnectorStructureReader
+from nld.connector.base import SQLConnectorStructureReader
+from nld.connector.base.structure_reader import (
+    normalize_column_default,
+    normalize_structure_type,
+)
+from nld.connector.postgresql.connector_definition import (
+    POSTGRESQL_CONNECTOR_DEFINITION,
+)
 from nld.connector.postgresql.engine.psycopg2.connector import Psycopg2SQLConnector
 from nld.connector.postgresql.postgresql_structure import PostgreSQLStructure
+from nld.connector.postgresql.sqlglot.ddl import PostgreSQLSqlglotDDLBuilder
 from nld.exceptions import NldRuntimeException
 from nld.structure import (
     Field,
@@ -13,21 +21,6 @@ from nld.structure import (
     StructureCharacterisation,
     StructureCharacterisationDefinitionNames,
 )
-
-
-def _escape_sql_literal(value: str) -> str:
-    """Escape a SQL string literal to prevent SQL injection.
-
-    Doubles any single quotes in the value, which is the standard
-    SQL escaping mechanism for string literals.
-
-    Args:
-        value: The string value to escape.
-
-    Returns:
-        The escaped value safe for use in SQL string literals.
-    """
-    return value.replace("'", "''")
 
 
 class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector]):
@@ -50,6 +43,11 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
     def active_database(self) -> str | None:
         """Get the active database name from the connection."""
         return self._connector.get_active_database()
+
+    @property
+    def _ddl_builder(self) -> PostgreSQLSqlglotDDLBuilder:
+        """The builder owning every SQL string the reader executes."""
+        return PostgreSQLSqlglotDDLBuilder()
 
     def extract_structures(
         self,
@@ -80,20 +78,19 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
                 f"cannot query '{database}'"
             )
             raise NldRuntimeException(msg)
-        # Get all tables/views matching the filter
+        # Get all tables/views matching the filter (also carries table_type,
+        # which the 4 detail queries below don't return)
         tables = self._get_tables_and_views(schema, object_name)
 
         if not tables:
             return []
 
-        # Build filter for bulk queries
-        table_keys = [(t["table_schema"], t["table_name"]) for t in tables]
-
-        # Fetch all metadata at once for all tables
-        all_columns = self._get_all_columns(table_keys)
-        all_indexes = self._get_all_indexes(table_keys)
-        all_pk_columns = self._get_all_primary_key_columns(table_keys)
-        all_unique_constraints = self._get_all_unique_constraints(table_keys)
+        # Fetch all metadata at once for all tables, applying the same
+        # filter inline rather than re-deriving it from `tables` above
+        all_columns = self._get_all_columns(schema, object_name)
+        all_indexes = self._get_all_indexes(schema, object_name)
+        all_pk_columns = self._get_all_primary_key_columns(schema, object_name)
+        all_unique_constraints = self._get_all_unique_constraints(schema, object_name)
 
         # Build structures from pre-fetched data
         structures: list[Structure] = []
@@ -121,25 +118,6 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
 
         return structures
 
-    def _build_values_clause(self, table_keys: list[tuple[str, str]]) -> str:
-        """Build a VALUES clause for filtering with escaped identifiers.
-
-        The values come from information_schema (database metadata) so they
-        are trusted, but we escape them to handle edge cases like identifiers
-        containing quotes.
-
-        Args:
-            table_keys: List of (schema, table_name) tuples.
-
-        Returns:
-            A VALUES clause string like "VALUES ('s1', 't1'), ('s2', 't2')".
-        """
-        values_parts = [
-            f"('{_escape_sql_literal(schema)}', '{_escape_sql_literal(table)}')"
-            for schema, table in table_keys
-        ]
-        return "VALUES " + ", ".join(values_parts)
-
     def _get_tables_and_views(
         self,
         schema: str | None,
@@ -154,68 +132,38 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         Returns:
             List of dicts with table_schema, table_name, table_type.
         """
-        excluded_schemas = ", ".join(f"'{s}'" for s in self.EXCLUDED_SCHEMAS)
-
-        query = f"""
-            SELECT table_schema, table_name, table_type
-            FROM information_schema.tables
-            WHERE table_schema NOT IN ({excluded_schemas})
-            {{% if schema %}}AND table_schema = '{{{{ schema }}}}'{{% endif %}}
-            {{% if object_name %}}AND table_name = '{{{{ object_name }}}}'{{% endif %}}
-            ORDER BY table_schema, table_name
-        """
-
-        params: dict[str, Any] = {}
-        if schema:
-            params["schema"] = schema
-        if object_name:
-            params["object_name"] = object_name
-
-        result = self._connector.execute_query(QueryWrapper(query=query, params=params))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_tables_and_views_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
         if df.empty:
             return []
         return df.to_dict("records")  # type: ignore[return-value]
 
     def _get_all_columns(
-        self, table_keys: list[tuple[str, str]]
+        self,
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], list[dict[str, Any]]]:
-        """Retrieve columns for all specified tables at once.
+        """Retrieve columns for all tables matching the filter at once.
 
         Args:
-            table_keys: List of (schema, table_name) tuples.
+            schema: Optional schema name to filter by.
+            object_name: Optional table/view name to filter by.
 
         Returns:
             Dict mapping (schema, table_name) to list of column metadata.
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT
-                c.table_schema,
-                c.table_name,
-                c.column_name,
-                c.data_type,
-                c.character_maximum_length,
-                c.numeric_precision,
-                c.numeric_scale,
-                c.is_nullable,
-                c.column_default
-            FROM information_schema.columns c
-            INNER JOIN target_tables t
-                ON c.table_schema = t.schema_name
-                AND c.table_name = t.table_name
-            ORDER BY c.table_schema, c.table_name, c.ordinal_position
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_table_columns_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         # Group by (schema, table_name)
         columns_by_table: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -229,39 +177,26 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         return columns_by_table
 
     def _get_all_primary_key_columns(
-        self, table_keys: list[tuple[str, str]]
+        self,
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], tuple[str, list[str]]]:
-        """Retrieve primary key constraint name and columns for all specified tables.
+        """Retrieve primary key constraint name and columns for the filtered tables.
 
         Args:
-            table_keys: List of (schema, table_name) tuples.
+            schema: Optional schema name to filter by.
+            object_name: Optional table/view name to filter by.
 
         Returns:
             Dict mapping (schema, table_name) to (constraint_name, column_names).
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT tc.table_schema, tc.table_name, tc.constraint_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            INNER JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.constraint_schema = kcu.constraint_schema
-            INNER JOIN target_tables t
-                ON tc.table_schema = t.schema_name
-                AND tc.table_name = t.table_name
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-            ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_primary_key_columns_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         pk_by_table: dict[tuple[str, str], tuple[str, list[str]]] = {}
         for row in df.to_dict("records"):
@@ -274,40 +209,26 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         return pk_by_table
 
     def _get_all_unique_constraints(
-        self, table_keys: list[tuple[str, str]]
+        self,
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
-        """Retrieve unique constraints for all specified tables at once.
+        """Retrieve unique constraints for all tables matching the filter at once.
 
         Args:
-            table_keys: List of (schema, table_name) tuples.
+            schema: Optional schema name to filter by.
+            object_name: Optional table/view name to filter by.
 
         Returns:
             Dict mapping (schema, table_name) to dict of constraint_name -> columns.
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT tc.table_schema, tc.table_name, tc.constraint_name, kcu.column_name
-            FROM information_schema.table_constraints tc
-            INNER JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.constraint_schema = kcu.constraint_schema
-            INNER JOIN target_tables t
-                ON tc.table_schema = t.schema_name
-                AND tc.table_name = t.table_name
-            WHERE tc.constraint_type = 'UNIQUE'
-            ORDER BY tc.table_schema, tc.table_name, tc.constraint_name,
-                kcu.ordinal_position
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_unique_constraints_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         # Group by (schema, table_name) then by constraint_name
         unique_by_table: dict[tuple[str, str], dict[str, list[str]]] = {}
@@ -325,61 +246,31 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         return unique_by_table
 
     def _get_all_indexes(
-        self, table_keys: list[tuple[str, str]]
+        self,
+        schema: str | None,
+        object_name: str | None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
-        """Retrieve non-constraint indexes for all specified tables at once.
+        """Retrieve non-constraint indexes for all tables matching the filter.
 
         Queries pg_catalog to find indexes that are not backing a
         PRIMARY KEY or UNIQUE constraint. Expression indexes (where
         the indexed expression is not a simple column) are excluded.
 
         Args:
-            table_keys: List of (schema, table_name) tuples.
+            schema: Optional schema name to filter by.
+            object_name: Optional table/view name to filter by.
 
         Returns:
             Dict mapping (schema, table_name) to dict of
             index_name -> column names.
         """
-        if not table_keys:
-            return {}
-
-        values_clause = self._build_values_clause(table_keys)
-
-        query = f"""
-            WITH target_tables (schema_name, table_name) AS (
-                {values_clause}
-            )
-            SELECT
-                n.nspname AS table_schema,
-                t.relname AS table_name,
-                i.relname AS index_name,
-                a.attname AS column_name,
-                array_position(ix.indkey, a.attnum) AS col_position
-            FROM pg_catalog.pg_index ix
-            INNER JOIN pg_catalog.pg_class t
-                ON t.oid = ix.indrelid
-            INNER JOIN pg_catalog.pg_class i
-                ON i.oid = ix.indexrelid
-            INNER JOIN pg_catalog.pg_namespace n
-                ON n.oid = t.relnamespace
-            INNER JOIN pg_catalog.pg_attribute a
-                ON a.attrelid = t.oid
-                AND a.attnum = ANY(ix.indkey)
-                AND a.attnum > 0
-            INNER JOIN target_tables tt
-                ON n.nspname = tt.schema_name
-                AND t.relname = tt.table_name
-            LEFT JOIN pg_catalog.pg_constraint c
-                ON c.conindid = ix.indexrelid
-            WHERE NOT ix.indisunique
-                AND NOT ix.indisprimary
-                AND c.oid IS NULL
-            ORDER BY n.nspname, t.relname, i.relname,
-                array_position(ix.indkey, a.attnum)
-        """
-
-        result = self._connector.execute_query(QueryWrapper(query=query))
-        df = result.get_output_data_as_df()
+        query = self._ddl_builder.build_table_indexes_query(
+            excluded_schemas=self.EXCLUDED_SCHEMAS,
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        df = result.get_result_df()
 
         indexes_by_table: dict[tuple[str, str], dict[str, list[str]]] = {}
         for row in df.to_dict("records"):
@@ -422,7 +313,7 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         """
         table_schema = table_info["table_schema"]
         table_name = table_info["table_name"]
-        table_type = self._normalize_structure_type(table_info["table_type"])
+        table_type = normalize_structure_type(table_info["table_type"])
 
         # Build fields
         fields: dict[str, Field] = {}
@@ -503,7 +394,7 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
         elif (
             num_precision
             and not pd.isna(num_precision)
-            and not self._has_fixed_precision(data_type)
+            and not POSTGRESQL_CONNECTOR_DEFINITION.has_fixed_precision(data_type)
         ):
             precision = int(num_precision)
 
@@ -513,6 +404,9 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
             data_type=data_type,
             length=length,
             precision=precision,
+            default_value=normalize_column_default(
+                raw_default=column_info["column_default"],
+            ),
         )
 
         # Add mandatory characterisation if NOT NULL
@@ -521,57 +415,52 @@ class PostgreSQLStructureReader(SQLConnectorStructureReader[Psycopg2SQLConnector
 
         return field
 
-    def _normalize_structure_type(self, raw_type: str) -> str:
-        """Normalize a PostgreSQL structure type.
-
-        Maps PostgreSQL information_schema type names to standard
-        NLD structure types (e.g. "BASE TABLE" becomes "TABLE").
-
-        Args:
-            raw_type: The raw structure type from information_schema.
-
-        Returns:
-            Normalized structure type string.
-        """
-        pg_structure_type_mapping = {
-            "BASE TABLE": "TABLE",
-        }
-        upper_type = raw_type.upper() if raw_type else ""
-        return pg_structure_type_mapping.get(upper_type, upper_type)
-
-    _PG_DATA_TYPE_ALIASES: dict[str, str] = {
-        "INTEGER": "INT",
-    }
-
-    _PG_FIXED_PRECISION_TYPES: set[str] = {
-        "BIGINT",
-        "BOOLEAN",
-        "DATE",
-        "DOUBLE PRECISION",
-        "INT",
-        "INTEGER",
-        "REAL",
-        "SMALLINT",
-        "TEXT",
-    }
-
     def _normalize_data_type(self, pg_type: str) -> str:
-        """Normalize a PostgreSQL data type to its canonical form.
+        """Uppercase the catalog data type, without aliasing.
 
-        Maps information_schema type names to the standard forms
-        used in structure YAML definitions. For example, "INTEGER"
-        becomes "INT" and "TIMESTAMP WITHOUT TIME ZONE" becomes
-        "TIMESTAMP".
-
-        Args:
-            pg_type: The PostgreSQL data type string.
-
-        Returns:
-            Normalized data type string.
+        Reader-level aliasing (``INTEGER`` -> ``INT``) caused false
+        diffs whenever the declared spelling differed from the alias;
+        both sides canonicalize through
+        ``normalize_comparable_data_type`` instead, so the reader
+        reports the catalog spelling verbatim.
         """
-        upper_type = pg_type.upper() if pg_type else ""
-        return self._PG_DATA_TYPE_ALIASES.get(upper_type, upper_type)
+        return pg_type.upper() if pg_type else ""
 
-    def _has_fixed_precision(self, data_type: str) -> bool:
-        """Check if a data type has a fixed precision that should not be reported."""
-        return data_type.upper() in self._PG_FIXED_PRECISION_TYPES
+    def get_dependent_views(
+        self,
+        schema: str,
+        object_name: str,
+    ) -> list[str]:
+        """Return the views of the schema directly depending on an object.
+
+        Uses the pg_depend catalog through the view rewrite rules —
+        the reason PostgreSQL blocks ALTER on a referenced column.
+        Cross-schema dependents are out of scope for now.
+        """
+        query = self._ddl_builder.build_dependent_views_query(
+            schema=schema,
+            object_name=object_name,
+        )
+        result = self._connector.execute_query(query)
+        records = result.get_result_records()
+        return sorted(record["view_name"] for record in records)
+
+    def get_all_dependent_views(
+        self,
+        schema: str,
+    ) -> dict[str, list[str]]:
+        """Return every direct view-dependency edge in the schema, batched.
+
+        One query returns the source→view edge for every table/view
+        pair in the schema; the BFS in ``find_dependent_views`` walks
+        this in-memory graph instead of issuing one query per node.
+        """
+        query = self._ddl_builder.build_all_dependent_views_query(schema=schema)
+        result = self._connector.execute_query(query)
+        records = result.get_result_records()
+        graph: dict[str, list[str]] = {}
+        for record in records:
+            graph.setdefault(record["source_name"], []).append(record["view_name"])
+        for source_name, view_names in graph.items():
+            graph[source_name] = sorted(view_names)
+        return graph

@@ -66,6 +66,7 @@ class FlowIncrementalDefinition(NldBaseModel):
     source_state_class: type
     processing_state_class: type
     planned_processing_state_class: type
+    planned_processing_detailled_state_class: type
     # When True, the framework automatically transitions the
     # processing state to SUCCEEDED or FAILED based on
     # the outcome of run_flow(). When False, the child task

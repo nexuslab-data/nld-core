@@ -14,6 +14,27 @@ class SnowflakeSqlglotDMLBuilder(BaseSqlglotDMLBuilder):
     def __init__(self) -> None:
         super().__init__(dialect="snowflake")
 
+    def build_delete_from_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        key_columns: list[str],
+    ) -> str:
+        """Build a key-matched DELETE via Snowflake's ``DELETE ... USING``.
+
+        The ``USING`` join form is Snowflake's documented idiom for
+        key-based deletes and avoids any doubt about correlated-subquery
+        support in DELETE. Identifiers stay unquoted, matching the
+        Snowflake DDL convention (upper-folded names).
+        """
+        join_conditions = " AND ".join(
+            f"{table_path}.{column} = _src.{column}" for column in key_columns
+        )
+        return (
+            f"DELETE FROM {table_path} USING ({sql_query}) AS _src "
+            f"WHERE {join_conditions}"
+        )
+
     def equality_clause(
         self,
         field: str,

@@ -3,18 +3,17 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ConfigDict
 
 from nld.connector.base.connector import DataConnector
-from nld.flow.state.config import (
-    StateBackendConnectorConfig,
+from nld.flow.config import (
+    ConnectorConfig,
     StateBackendConnectorConfigWrapper,
     merge_state_backend_connector_config_wrappers,
 )
 from nld.pydantic import NldBaseModel
 from nld.task.context import NldExecutionContext
 
-# Resolves a circular import: nld.flow.definition.flow_definition imports
-# StateBackendConnectorConfigWrapper from nld.flow.state.config (triggering
-# this package's __init__), and this resolver references the
-# NamespacedDataFlowDefinition shape only as a parameter type.
+# NamespacedDataFlowDefinition is referenced only as a parameter type;
+# importing nld.flow.definition at runtime would risk a circular import,
+# so it is kept under TYPE_CHECKING.
 if TYPE_CHECKING:
     from nld.flow.definition.flow_definition import NamespacedDataFlowDefinition
 
@@ -30,7 +29,7 @@ class StateBackendConnector(NldBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data_connector: DataConnector[Any]
-    config: StateBackendConnectorConfig
+    config: ConnectorConfig
 
 
 class StateBackendConnectorWrapper(NldBaseModel):
@@ -83,7 +82,7 @@ def build_state_backend_connector_wrapper(
     namespaced_data_flow_definition: "NamespacedDataFlowDefinition",
     execution_context: NldExecutionContext,
     open_connection: bool,
-    profile_name: str | None = None,
+    override_profile_name: str | None = None,
 ) -> StateBackendConnectorWrapper | None:
     """Resolve the effective state backend AND the live primary/secondary connectors.
 
@@ -93,8 +92,12 @@ def build_state_backend_connector_wrapper(
     read-only state CLI tasks that don't go through the standard
     connector-loading flow; use ``open_connection=False`` for the
     executor path where connections are already opened by
-    ``_load_data_connectors``. ``profile_name`` selects a credential
-    profile for the state backend connection when it is lazy-loaded here.
+    ``_load_data_connectors``.
+
+    Profile precedence for each side is: the global ``override_profile_name``
+    (the ``--profile-name`` CLI flag) when supplied, else the
+    definition-level ``profile_name`` declared on the side's config, else
+    the connection's default profile.
     """
     effective_state_backend_connector_config_wrapper = (
         build_effective_state_backend_connector_config_wrapper(
@@ -111,7 +114,7 @@ def build_state_backend_connector_wrapper(
         ),
         state_backend_connector_side="primary",
         open_connection=open_connection,
-        profile_name=profile_name,
+        override_profile_name=override_profile_name,
     )
     secondary_state_backend_connector = (
         _resolve_state_backend_connector_for_side(
@@ -121,7 +124,7 @@ def build_state_backend_connector_wrapper(
             ),
             state_backend_connector_side="secondary",
             open_connection=open_connection,
-            profile_name=profile_name,
+            override_profile_name=override_profile_name,
         )
         if effective_state_backend_connector_config_wrapper.secondary is not None
         else None
@@ -134,13 +137,19 @@ def build_state_backend_connector_wrapper(
 
 def _resolve_state_backend_connector_for_side(
     execution_context: NldExecutionContext,
-    state_backend_connector_config: StateBackendConnectorConfig,
+    state_backend_connector_config: ConnectorConfig,
     state_backend_connector_side: Literal["primary", "secondary"],
     open_connection: bool,
-    profile_name: str | None = None,
+    override_profile_name: str | None = None,
 ) -> StateBackendConnector:
     # The side string is used only to make the error message explicit.
     connection_name = state_backend_connector_config.connector
+    # CLI flag wins over the definition-level profile pinned on the side.
+    effective_profile_name = (
+        override_profile_name
+        if override_profile_name is not None
+        else state_backend_connector_config.profile_name
+    )
     available_data_connector_names = set(
         execution_context.get_available_data_connector_names()
     )
@@ -161,7 +170,7 @@ def _resolve_state_backend_connector_for_side(
         )
     data_connector = execution_context.get_data_connector(
         name=connection_name,
-        profile_name=profile_name,
+        profile_name=effective_profile_name,
         open_connection=open_connection,
     )
     return StateBackendConnector(

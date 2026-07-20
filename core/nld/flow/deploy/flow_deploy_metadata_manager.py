@@ -22,7 +22,7 @@ class FlowDeployMetadataManager(NldLoggable):
     """Manages the flow deployment metadata tables.
 
     Provides CRUD operations for five metadata tables:
-    - ``_nld_flow_deployment``: one row per manifest execution
+    - ``_nld_flow_deployment``: one row per deploy run
     - ``_nld_flow_deployment_flow_change``: one row per flow change
     - ``_nld_flow_deployment_structure_change``: one row per structure change
     - ``_nld_flow_state``: current state per flow (upserted)
@@ -110,13 +110,12 @@ class FlowDeployMetadataManager(NldLoggable):
     ) -> None:
         """Update the status and counts of a deployment after execution."""
         updated_row = FlowDeploymentRow(
+            changeset_id="",
             completed_at=completed_at,
             deployment_id=deployment_id,
             flows_in_error=flows_in_error,
             flows_in_success=flows_in_success,
             flows_skipped=flows_skipped,
-            manifest_id="",
-            manifest_name="",
             started_at=completed_at,
             status=status,
             structures_in_error=structures_in_error,
@@ -128,30 +127,8 @@ class FlowDeployMetadataManager(NldLoggable):
             model=updated_row,
             schema_name=metadata_schema,
             table_name=NLD_FLOW_DEPLOYMENT_TABLE,
-            exclude_fields={"manifest_id", "manifest_name"},
+            exclude_fields={"changeset_id"},
             track_timestamps=True,
-        )
-
-    def is_manifest_already_deployed(
-        self,
-        metadata_schema: str,
-        manifest_id: str,
-    ) -> bool:
-        """Check if a manifest has already been successfully executed.
-
-        Only manifests with status ``success`` are considered deployed.
-        Failed or partial deployments can be retried.
-        """
-        object_path = f"{metadata_schema}.{NLD_FLOW_DEPLOYMENT_TABLE}"
-        return (
-            self._connector.get_row_count(
-                object_path=object_path,
-                where_conditions={
-                    "manifest_id": manifest_id,
-                    "status": "success",
-                },
-            )
-            > 0
         )
 
     # ------------------------------------------------------------------
@@ -216,6 +193,19 @@ class FlowDeployMetadataManager(NldLoggable):
             row.flow_python_hash,
         )
 
+    def read_state_row(
+        self,
+        metadata_schema: str,
+        flow_name: str,
+        namespace: str,
+    ) -> FlowDeployMetadataRow | None:
+        """Read the current recorded state row of a flow."""
+        return self._read_metadata_row(
+            metadata_schema=metadata_schema,
+            flow_name=flow_name,
+            namespace=namespace,
+        )
+
     def get_previous_deployment_id(
         self,
         metadata_schema: str,
@@ -243,6 +233,26 @@ class FlowDeployMetadataManager(NldLoggable):
             schema_name=metadata_schema,
             table_name=NLD_FLOW_STATE_TABLE,
             track_timestamps=True,
+        )
+
+    def delete_state_row(
+        self,
+        metadata_schema: str,
+        namespace: str,
+        flow_name: str,
+    ) -> None:
+        """Delete the current state row of a flow.
+
+        Used by rename_flow directives: the renamed flow records a
+        fresh row under its new name and the old row must not read
+        as a REMOVED flow afterwards.
+        """
+        self._connector.delete_from(
+            table_path=f"{metadata_schema}.{NLD_FLOW_STATE_TABLE}",
+            where_conditions={
+                "namespace": namespace,
+                "flow_name": flow_name,
+            },
         )
 
     def write_history_record(

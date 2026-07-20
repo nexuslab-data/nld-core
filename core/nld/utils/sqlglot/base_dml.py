@@ -3,7 +3,12 @@ from typing import Any
 
 from sqlglot import exp
 
-from nld.utils.sqlglot.utils import identifier_list, literal_list, quote_table
+from nld.utils.sqlglot.utils import (
+    identifier_list,
+    literal_list,
+    quote_table,
+    quoted_table,
+)
 
 
 class BaseSqlglotDMLBuilder:
@@ -292,6 +297,151 @@ class BaseSqlglotDMLBuilder:
 
         return f"INSERT INTO {table_ref} ({columns}) {values} {on_conflict};"
 
+    # -- Data-audit / profiling query builders -------------------------------
+    #
+    # These build the aggregate queries that a data profiler runs to measure a
+    # table (coverage, distinct counts, value ranges, distributions, date span).
+    # They are dialect-aware through sqlglot; a connector-specific DML builder
+    # may override them (e.g. a different random-sampling expression) when its
+    # engine needs it.
+
+    @staticmethod
+    def _audit_column(name: str) -> exp.Column:
+        """Quoted column reference used by the audit aggregates."""
+        return exp.Column(this=exp.to_identifier(name, quoted=True))
+
+    def build_audit_source(
+        self,
+        schema_name: str,
+        table_name: str,
+        sample_size: int | None = None,
+    ) -> exp.Expression:
+        """Build the FROM source for audit queries.
+
+        Returns the quoted table reference, or — when ``sample_size`` is set —
+        a ``(SELECT * FROM <table> ORDER BY RANDOM() LIMIT N) AS src`` subquery.
+        Override in a connector-specific builder to use an engine-native
+        sampling clause (e.g. ``TABLESAMPLE``) or random function.
+        """
+        table_expr = quoted_table(schema=schema_name, table=table_name)
+        if sample_size is None:
+            return table_expr
+        inner = (
+            exp.Select(expressions=[exp.Star()])
+            .from_(table_expr)
+            .order_by(exp.func("RANDOM"))
+            .limit(sample_size)
+        )
+        return exp.Subquery(
+            this=inner,
+            alias=exp.TableAlias(this=exp.to_identifier("src")),
+        )
+
+    def build_audit_coverage_query(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_names: list[str],
+        sample_size: int | None = None,
+    ) -> str:
+        """Build the single coverage query for all profiled columns.
+
+        Emits ``count(*) AS total`` plus, per column at position ``i``,
+        ``count(col) AS nn_<i>`` and ``count(DISTINCT col) AS dc_<i>``.
+        """
+        source = self.build_audit_source(schema_name, table_name, sample_size)
+        expressions: list[exp.Expression] = [
+            exp.alias_(exp.Count(this=exp.Star()), "total")
+        ]
+        for index, name in enumerate(column_names):
+            column = self._audit_column(name)
+            expressions.append(exp.alias_(exp.Count(this=column.copy()), f"nn_{index}"))
+            expressions.append(
+                exp.alias_(
+                    exp.Count(this=exp.Distinct(expressions=[column.copy()])),
+                    f"dc_{index}",
+                )
+            )
+        return (
+            exp.Select(expressions=expressions).from_(source).sql(dialect=self._dialect)
+        )
+
+    def build_audit_min_max_query(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_names: list[str],
+        sample_size: int | None = None,
+    ) -> str:
+        """Build the min/max query for the given (numeric/temporal) columns.
+
+        Emits ``min(col) AS min_<i>`` / ``max(col) AS max_<i>`` per column at
+        position ``i``. Returns an empty string when no columns are provided.
+        """
+        if not column_names:
+            return ""
+        source = self.build_audit_source(schema_name, table_name, sample_size)
+        expressions: list[exp.Expression] = []
+        for index, name in enumerate(column_names):
+            column = self._audit_column(name)
+            expressions.append(exp.alias_(exp.Min(this=column.copy()), f"min_{index}"))
+            expressions.append(exp.alias_(exp.Max(this=column.copy()), f"max_{index}"))
+        return (
+            exp.Select(expressions=expressions).from_(source).sql(dialect=self._dialect)
+        )
+
+    def build_audit_distribution_query(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        top_n: int,
+        sample_size: int | None = None,
+    ) -> str:
+        """Build a top-N value distribution query for one column.
+
+        Counts non-null values grouped by the column, ordered by frequency
+        descending, capped at ``top_n``. The null share is intentionally
+        excluded — it is already captured by the column's coverage.
+        """
+        source = self.build_audit_source(schema_name, table_name, sample_size)
+        column = self._audit_column(column_name)
+        query = (
+            exp.Select(
+                expressions=[
+                    exp.alias_(column.copy(), "value"),
+                    exp.alias_(exp.Count(this=exp.Star()), "count"),
+                ]
+            )
+            .from_(source)
+            .where(exp.Not(this=exp.Is(this=column.copy(), expression=exp.Null())))
+            .group_by(column.copy())
+            .order_by(exp.column("count").desc())
+            .limit(top_n)
+        )
+        return query.sql(dialect=self._dialect)
+
+    def build_audit_date_span_query(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        sample_size: int | None = None,
+    ) -> str:
+        """Build a min/max query over a single date/timestamp column."""
+        source = self.build_audit_source(schema_name, table_name, sample_size)
+        column = self._audit_column(column_name)
+        return (
+            exp.Select(
+                expressions=[
+                    exp.alias_(exp.Min(this=column.copy()), "date_from"),
+                    exp.alias_(exp.Max(this=column.copy()), "date_to"),
+                ]
+            )
+            .from_(source)
+            .sql(dialect=self._dialect)
+        )
+
     def build_insert_from_select_query(
         self,
         schema_name: str,
@@ -346,4 +496,34 @@ class BaseSqlglotDMLBuilder:
 
         return (
             f"INSERT INTO {table_ref} ({columns}) \n{selection_query}\n{on_conflict};"
+        )
+
+    def build_mark_absent_rows_deleted_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        key_columns: list[str],
+        deletion_flag_column: str,
+    ) -> str:
+        """Build the logical-delete UPDATE for rows absent from the query.
+
+        Flags every target row whose key is not returned by ``sql_query``.
+        The ``NOT EXISTS`` form is used instead of a multi-column tuple
+        ``NOT IN`` (unsupported against a subquery on BigQuery), and the
+        already-flagged guard uses ``COALESCE(flag, FALSE) = FALSE``
+        rather than ``IS NOT TRUE`` (Snowflake has no ``IS [ NOT ] TRUE``
+        predicate). Identifiers stay unquoted here — the default suits
+        Postgres and Snowflake; BigQuery overrides this to quote them.
+        """
+        join_conditions = " AND ".join(
+            f"_src.{column} = {table_path}.{column}" for column in key_columns
+        )
+        return (
+            f"UPDATE {table_path} "
+            f"SET {deletion_flag_column} = TRUE "
+            f"WHERE COALESCE({deletion_flag_column}, FALSE) = FALSE "
+            f"AND NOT EXISTS ("
+            f"SELECT 1 FROM ({sql_query}) AS _src "
+            f"WHERE {join_conditions}"
+            f")"
         )

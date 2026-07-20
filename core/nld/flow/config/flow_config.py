@@ -3,8 +3,8 @@ from typing import Any
 from pydantic import Field as PydanticField
 from pydantic import field_validator
 
+from nld.flow.config.state_backend_connector import StateBackendConnectorConfigWrapper
 from nld.flow.incremental.models import FLOW_INCREMENTAL_TYPE_LITERAL
-from nld.flow.state.config import StateBackendConnectorConfigWrapper
 from nld.flow.utils import FLOW_LOADING_STRATEGY_LITERAL
 from nld.pydantic.base_model import NldBaseModel
 from nld.pydantic.namespace import NldNamespace

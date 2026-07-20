@@ -137,6 +137,19 @@ class BigQueryExecutionBackendStateManager(
 
         return FlowExecutionHistory(executions=execution_infos)
 
+    def _get_steps_for(self, flow_uid: str) -> list[FlowStepExecutionInfo]:
+        """Return the recorded step rows for a single execution."""
+        return cast(
+            list[FlowStepExecutionInfo],
+            self.pydantic_manager.read_models(
+                model_class=FlowStepExecutionInfo,
+                schema_name=self.backend_schema_name,
+                table_name=BIGQUERY_EXECUTION_STEP_HISTORY_TABLE_NAME,
+                where_conditions={"flow_uid": flow_uid},
+                order_by=["started_at"],
+            ),
+        )
+
     def retrieve_latest_execution_state(
         self,
     ) -> tuple[FlowExecutionState, FlowExecutionHistory]:

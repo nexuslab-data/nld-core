@@ -4,7 +4,7 @@ from pydantic import Field, field_validator, model_validator
 
 from nld.pydantic import NldNamedBaseModel
 
-from .field_characterisation_def import (
+from .field_characterisation_definition import (
     FieldCharacterisationDefinition,
 )
 

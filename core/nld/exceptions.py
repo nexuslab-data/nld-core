@@ -182,3 +182,19 @@ class NoObjectLoadedException(NldRuntimeException):
             f"No object {object_type.__name__} was loaded from file {file_path}"
         )
         super().__init__(self.message)
+
+    ####################################################################
+    ##                   Environment exceptions                       ##
+    ####################################################################
+
+
+class MissingEnvironmentVariableException(NldRuntimeException):
+    CODE = 51001
+    MESSAGE = "Required environment variable is not set"
+
+    def __init__(self, variable_name: str) -> None:
+        self.message = (
+            f"Required environment variable '{variable_name}' is not set and "
+            f"has no default. Set it in the environment or in '.nld/.env'."
+        )
+        super().__init__(self.message)

@@ -15,22 +15,17 @@ is reused by `nld project info`, `nld flow info`, `nld structure info`
 and any future info/state command.
 """
 
-from typing import Any
-
 from nld.flow.execution import FlowExecutionHistory, FlowExecutionInfo
 from nld.flow.execution.execution_info import FlowStepExecutionInfo
 from nld.flow.incremental.models import (
     FlowProcessingState,
     FlowState,
     FlowStatePlan,
-    IncrementalProcessingStatus,
 )
 from nld.utils.user_display import (
     format_aligned_table,
     format_datetime_for_display,
     format_datetime_range,
-    format_datetime_string_for_display,
-    format_datetime_string_range,
     format_duration_between,
     format_key_value_lines,
     format_seconds_compact,
@@ -135,11 +130,29 @@ def render_execution_history_text(history: FlowExecutionHistory) -> str:
 
 
 def render_execution_steps_text(steps: list[FlowStepExecutionInfo]) -> str:
-    """Render the steps of a single execution as a fixed-width table."""
+    """Render the steps of a single execution as a fixed-width table.
+
+    The ``rows`` and ``files`` columns surface the per-step row counts
+    (source/target entries) and file-movement counts; the ``error``
+    column carries the step error. All three are declared droppable, so
+    the shared table renderer omits any of them entirely when no step
+    carries a value — e.g. a fully successful execution shows no ``error``
+    column, and steps without row metrics show no ``rows`` column. Counts
+    are formatted ``label:<success>[!<error>]`` — e.g. ``ins:1200`` or
+    ``src:500!3`` when 3 of the source entries failed.
+    """
     if not steps:
         return "No steps recorded for this execution.\n"
 
-    headers = ["step_name", "status", "started_at", "duration", "error"]
+    headers = [
+        "step_name",
+        "status",
+        "started_at",
+        "duration",
+        "rows",
+        "files",
+        "error",
+    ]
     rows: list[list[str]] = []
     for step in steps:
         duration = (
@@ -153,39 +166,38 @@ def render_execution_steps_text(steps: list[FlowStepExecutionInfo]) -> str:
                 step.step_status or "N/A",
                 format_datetime_for_display(step.started_at),
                 duration or "N/A",
+                step.get_entries_summary() or "",
+                step.get_files_summary() or "",
                 truncate(text=step.step_error or "", max_length=60),
             ]
         )
-    table_lines = format_aligned_table(headers=headers, rows=rows)
+    table_lines = format_aligned_table(
+        headers=headers,
+        rows=rows,
+        droppable_columns=("rows", "files", "error"),
+    )
     return "\n" + "\n".join(table_lines) + "\n\n"
 
 
 def render_incremental_state_text(
-    processing: FlowProcessingState | None,
-    post_processing: FlowState | None,
-    include_post_processing: bool,
+    processing_state: FlowProcessingState | None,
+    current_state: FlowState | None,
+    processing_only: bool,
 ) -> str:
-    """Render the incremental processing state (optionally with post-state)."""
-    if processing is None and (not include_post_processing or post_processing is None):
+    """Render the current incremental state (or the processing slot).
+
+    By default the current authoritative state is shown. With
+    ``processing_only`` the last run's transient processing state is
+    shown instead.
+    """
+    if processing_only:
+        if processing_state is None:
+            return "No incremental processing state recorded yet.\n"
+        return "Processing state:\n" + processing_state.render_state_text() + "\n"
+
+    if current_state is None:
         return "No incremental state recorded yet.\n"
-
-    sections: list[str] = []
-
-    if processing is not None:
-        sections.append("Processing state:\n" + _render_processing_state(processing))
-    elif include_post_processing:
-        sections.append("Processing state:\n  (not recorded yet)")
-
-    if include_post_processing:
-        if post_processing is not None:
-            sections.append(
-                "Post-processing state:\n"
-                + _render_post_processing_state(post_processing)
-            )
-        else:
-            sections.append("Post-processing state:\n  (not recorded yet)")
-
-    return "\n\n".join(sections) + "\n"
+    return "Current state:\n" + current_state.render_state_text() + "\n"
 
 
 def render_stateless_incremental_text(strategy: str) -> str:
@@ -216,127 +228,19 @@ def render_plans_not_supported_text(strategy: str) -> str:
     )
 
 
-def _render_processing_state(processing: FlowProcessingState) -> str:
-    """Render a single FlowProcessingState as aligned key-value lines."""
-    data = processing.model_dump(mode="json", exclude_none=True)
-    # The CLI invocation already pins the flow, so flow_uid / strategy
-    # are redundant given context — drop them from the text view.
-    data.pop("flow_uid", None)
-    data.pop("strategy", None)
-
-    pairs: list[tuple[str, str]] = []
-
-    pull_from = data.pop("pull_from_timestamp", None)
-    pull_to = data.pop("pull_to_timestamp", None)
-    pull_range = format_datetime_string_range(start=pull_from, end=pull_to)
-    if pull_range is not None:
-        pairs.append(("Pull", pull_range))
-
-    keys = data.pop("keys", None)
-
-    if "processing_status" in data:
-        pairs.append(("Status", str(data.pop("processing_status"))))
-    if "processing_completed_at" in data:
-        pairs.append(
-            (
-                "Completed at",
-                format_datetime_string_for_display(data.pop("processing_completed_at")),
-            )
-        )
-    if "process_error_message" in data:
-        pairs.append(("Error", str(data.pop("process_error_message"))))
-
-    for key, value in data.items():
-        pairs.append((key, str(value)))
-
-    lines = format_key_value_lines(pairs=pairs)
-
-    if keys is not None and isinstance(keys, dict):
-        lines.extend(_render_keys_breakdown(keys=keys))
-
-    if not lines:
-        lines.append("  (empty)")
-    return "\n".join(lines)
-
-
-def _render_post_processing_state(post_processing: FlowState) -> str:
-    """Render a FlowState (post-processing/authoritative view)."""
-    data = post_processing.model_dump(mode="json", exclude_none=True)
-
-    pairs: list[tuple[str, str]] = []
-
-    last_pull_to = data.pop("last_pull_to_timestamp", None)
-    if last_pull_to is not None:
-        pairs.append(("Last pull to", format_datetime_string_for_display(last_pull_to)))
-
-    keys = data.pop("keys", None)
-
-    for key, value in data.items():
-        pairs.append((key, str(value)))
-
-    lines = format_key_value_lines(pairs=pairs)
-
-    if keys is not None and isinstance(keys, dict):
-        lines.extend(_render_keys_breakdown(keys=keys, status_field="status"))
-
-    if not lines:
-        lines.append("  (empty)")
-    return "\n".join(lines)
-
-
-KEYS_SAMPLE_SIZE = 10
-
-
-def _render_keys_breakdown(
-    keys: dict[str, Any],
-    status_field: str = "processing_status",
-) -> list[str]:
-    """Render aggregate counts of by-key state entries.
-
-    Appends a sample of up to ``KEYS_SAMPLE_SIZE`` TO_BE_PROCESSED key
-    names so the operator can spot-check which entries the next run will
-    actually process without dumping every key in larger flows.
-    """
-    counts: dict[str, int] = {}
-    to_be_processed: list[str] = []
-    for key_name, key_state in keys.items():
-        status = (
-            key_state.get(status_field) if isinstance(key_state, dict) else None
-        ) or "N/A"
-        counts[status] = counts.get(status, 0) + 1
-        if status == IncrementalProcessingStatus.TO_BE_PROCESSED:
-            to_be_processed.append(key_name)
-
-    pairs: list[tuple[str, str]] = [("Keys total", str(len(keys)))]
-    for status, count in sorted(counts.items()):
-        pairs.append((status, str(count)))
-    lines = format_key_value_lines(pairs=pairs)
-
-    sample = to_be_processed[:KEYS_SAMPLE_SIZE]
-    if sample:
-        header = (
-            f"  Sample of to be processed ({len(sample)} of {len(to_be_processed)}):"
-            if len(to_be_processed) > len(sample)
-            else f"  Sample of to be processed ({len(sample)}):"
-        )
-        lines.append(header)
-        lines.extend(f"    - {name}" for name in sample)
-    return lines
-
-
 def render_planned_processing_state_text(
-    processing: FlowProcessingState | None,
+    processing_state: FlowProcessingState | None,
     persisted: bool,
     plan_state_uid: str | None = None,
     requestor: str | None = None,
 ) -> str:
     """Render the result of ``nld flow state incremental compute``.
 
-    Reuses ``_render_processing_state`` for the body, then prepends a
-    short metadata header reflecting whether the plan was persisted
-    and (when persisted) the plan uid and requestor.
+    Reuses the state's own ``render_state_text`` for the body, then
+    prepends a short metadata header reflecting whether the plan was
+    persisted and (when persisted) the plan uid and requestor.
     """
-    if processing is None:
+    if processing_state is None:
         if persisted:
             return "Nothing to compute (no processing state for this strategy).\n"
         return "Nothing to compute (no processing state for this strategy).\n"
@@ -352,7 +256,7 @@ def render_planned_processing_state_text(
     if header_pairs:
         header_lines = "\n".join(format_key_value_lines(pairs=header_pairs))
         sections.append("Plan:\n" + header_lines)
-    sections.append("Processing state:\n" + _render_processing_state(processing))
+    sections.append("Processing state:\n" + processing_state.render_state_text())
 
     return "\n\n".join(sections) + "\n"
 

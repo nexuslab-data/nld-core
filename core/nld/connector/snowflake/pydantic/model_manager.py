@@ -326,12 +326,15 @@ class NldBaseModelSnowflakeManager(NldBaseModelManager):
         result = self.connector.execute_query(query_str)
         if result.failed():
             return []
-        df = result.get_output_data_as_df()
 
+        # Use the raw records helper rather than the pandas DataFrame view:
+        # pandas promotes NULLs in numeric/timestamp columns to NaN (a float),
+        # which Pydantic then rejects on ``int | None`` / ``datetime | None``
+        # fields with "'float' object cannot be interpreted as an integer".
         json_fields = _get_json_serialized_fields(model_class)
 
         models = []
-        for row in df.to_dict("records"):
+        for row in result.get_result_records():
             for field_name in json_fields:
                 if (
                     field_name in row

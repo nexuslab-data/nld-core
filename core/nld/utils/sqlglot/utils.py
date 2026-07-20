@@ -1,9 +1,51 @@
 from typing import Any
 
-from sqlglot import exp
+from sqlglot import exp, parse_one
+from sqlglot.errors import ParseError
 
 POSTGRES_DIALECT = "postgres"
 SNOWFLAKE_DIALECT = "snowflake"
+
+
+def _safe_parse_one(
+    query: str,
+    dialect: str | None = None,
+) -> exp.Expression | None:
+    """Parse a single SQL statement, returning None when it cannot be parsed."""
+    try:
+        return parse_one(query, dialect=dialect)
+    except ParseError:
+        return None
+
+
+def is_select_query(
+    query: str,
+    dialect: str | None = None,
+) -> bool:
+    """Return True when the query is a read-only SELECT/WITH statement.
+
+    The query is parsed through sqlglot so comments, formatting and CTEs
+    do not affect the detection, unlike a naive leading-keyword check.
+    """
+    parsed = _safe_parse_one(
+        query=query,
+        dialect=dialect,
+    )
+    return isinstance(parsed, exp.Select | exp.Union | exp.Subquery)
+
+
+def get_query_statement_type(
+    query: str,
+    dialect: str | None = None,
+) -> str:
+    """Return the upper-cased statement type (SELECT, INSERT, ...) of a query."""
+    parsed = _safe_parse_one(
+        query=query,
+        dialect=dialect,
+    )
+    if parsed is None:
+        return "UNKNOWN"
+    return parsed.key.upper()
 
 
 def find_table_reference(

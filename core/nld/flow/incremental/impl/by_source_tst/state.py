@@ -3,6 +3,7 @@ import datetime
 from pydantic import field_validator
 
 from nld.flow.incremental.models import (
+    FlowPlannedProcessingDetailledState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
@@ -10,6 +11,11 @@ from nld.flow.incremental.models import (
     IncrementalProcessingStatus,
 )
 from nld.utils.datetime_util import ensure_utc_datetime, get_current_datetime
+from nld.utils.user_display import (
+    format_datetime_for_display,
+    format_datetime_range,
+    format_key_value_lines,
+)
 
 
 class BySourceTstState(FlowState):
@@ -26,6 +32,21 @@ class BySourceTstState(FlowState):
     ) -> datetime.datetime | None:
         """Enforce UTC timezone on all timestamp fields."""
         return ensure_utc_datetime(value)
+
+    def render_state_text(self) -> str:
+        """Render the authoritative watermark the next run resumes from."""
+        pairs: list[tuple[str, str]] = []
+        if self.last_pull_to_timestamp is not None:
+            pairs.append(
+                (
+                    "Last pull to",
+                    format_datetime_for_display(value=self.last_pull_to_timestamp),
+                )
+            )
+        lines = format_key_value_lines(pairs=pairs)
+        if not lines:
+            lines.append("  (empty)")
+        return "\n".join(lines)
 
 
 class BySourceTstSourceState(FlowSourceState):
@@ -82,6 +103,30 @@ class BySourceTstProcessingState(FlowProcessingState):
             range_display = "no range"
         return f"Strategy: {self.strategy} | Range: {range_display}"
 
+    def render_state_text(self) -> str:
+        """Render the pull window and outcome of the most recent run."""
+        pairs: list[tuple[str, str]] = []
+        pull_range = format_datetime_range(
+            start=self.pull_from_timestamp,
+            end=self.pull_to_timestamp,
+        )
+        if pull_range is not None:
+            pairs.append(("Pull", pull_range))
+        pairs.append(("Status", str(self.processing_status)))
+        if self.processing_completed_at is not None:
+            pairs.append(
+                (
+                    "Completed at",
+                    format_datetime_for_display(value=self.processing_completed_at),
+                )
+            )
+        if self.process_error_message is not None:
+            pairs.append(("Error", str(self.process_error_message)))
+        lines = format_key_value_lines(pairs=pairs)
+        if not lines:
+            lines.append("  (empty)")
+        return "\n".join(lines)
+
     def to_be_processed(self) -> bool:
         return self.processing_status == IncrementalProcessingStatus.TO_BE_PROCESSED
 
@@ -92,7 +137,51 @@ class BySourceTstProcessingState(FlowProcessingState):
         return self.processing_status == IncrementalProcessingStatus.FAILED
 
 
-class BySourceTstPlannedProcessingState(
-    FlowPlannedProcessingState[BySourceTstProcessingState],
+class BySourceTstPlannedProcessingDetailledState(
+    FlowPlannedProcessingDetailledState[BySourceTstProcessingState],
 ):
-    """A PLANNED plan carrying a by_source_tst processing-state payload."""
+    """Plan-time detail for a by_source_tst PLANNED plan."""
+
+    strategy: str
+    pull_from_timestamp: datetime.datetime | None = None
+    pull_to_timestamp: datetime.datetime | None = None
+
+    @field_validator(
+        "pull_from_timestamp",
+        "pull_to_timestamp",
+        mode="before",
+    )
+    @classmethod
+    def validate_utc_timezone(
+        cls,
+        value: datetime.datetime | None,
+    ) -> datetime.datetime | None:
+        """Enforce UTC timezone on all timestamp fields."""
+        return ensure_utc_datetime(value)
+
+    def to_processing_state(self, flow_uid: str) -> BySourceTstProcessingState:
+        return BySourceTstProcessingState(
+            flow_uid=flow_uid,
+            strategy=self.strategy,
+            pull_from_timestamp=self.pull_from_timestamp,
+            pull_to_timestamp=self.pull_to_timestamp,
+        )
+
+    @classmethod
+    def from_processing_state(
+        cls,
+        plan_state_uid: str,
+        processing_state: BySourceTstProcessingState,
+    ) -> "BySourceTstPlannedProcessingDetailledState":
+        return cls(
+            plan_state_uid=plan_state_uid,
+            strategy=processing_state.strategy,
+            pull_from_timestamp=processing_state.pull_from_timestamp,
+            pull_to_timestamp=processing_state.pull_to_timestamp,
+        )
+
+
+class BySourceTstPlannedProcessingState(
+    FlowPlannedProcessingState[BySourceTstPlannedProcessingDetailledState],
+):
+    """A PLANNED plan carrying a by_source_tst planned-detail payload."""

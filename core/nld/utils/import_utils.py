@@ -3,7 +3,7 @@ import sys
 from types import ModuleType
 from typing import Any
 
-from nld.logging.logger import log_debug_default
+from nld.logging.logger import log_debug_default, log_trace_default
 
 
 def import_module(
@@ -40,7 +40,7 @@ def import_module(
 
 
 def import_class_inside_module(class_path: str) -> tuple[ModuleType, type[Any]]:
-    log_debug_default(f"Import of class {class_path} - Started")
+    log_trace_default(f"Import of class {class_path} - Started")
     if "." in class_path:
         module_name, class_name = class_path.rsplit(".", 1)
     else:
@@ -52,6 +52,6 @@ def import_class_inside_module(class_path: str) -> tuple[ModuleType, type[Any]]:
     module = importlib.import_module(module_name)
     class_type = getattr(module, class_name)
 
-    log_debug_default(f"Import of class {class_path} - Completed successfully")
+    log_trace_default(f"Import of class {class_path} - Completed successfully")
 
     return module, class_type

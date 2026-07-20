@@ -14,6 +14,7 @@ from nld.structure.config.structure_config import StructureProjectConfig
 from nld.utils.yaml_util import load_yaml_file_into_dict
 
 from .additional_entity_config import AdditionalEntityConfig
+from .environment_config import EnvironmentsConfig
 from .project_exceptions import (
     NldMissingProjectYamlFile,
     NldProjectError,
@@ -94,6 +95,7 @@ class Project(NldBaseModel):
     entity_registry: NldEntityRegistry = Field(
         default_factory=lambda: NldEntityRegistry()
     )
+    environments: EnvironmentsConfig = Field(default_factory=EnvironmentsConfig)
     metadata_backend_connector: str | None = None
     flow_config: FlowProjectConfig = Field(
         default_factory=lambda: FlowProjectConfig(mappings={})
@@ -104,6 +106,20 @@ class Project(NldBaseModel):
     )
     version: str | None = None
     variables: dict[str, str] = Field(default_factory=dict)
+    properties: dict[str, str] | None = None
+
+    def override_metadata_backend_connector(
+        self,
+        connection_name: str | None,
+    ) -> None:
+        """Point the deployment metadata backend at another connection.
+
+        Sanctioned mutation hook for test harnesses and bootstrap
+        tooling that build a Project from fixtures and then bind it to
+        a live test connection — instead of bypassing the model's
+        immutability with ``object.__setattr__``.
+        """
+        object.__setattr__(self, "metadata_backend_connector", connection_name)
 
     @field_validator("python_additional_paths")
     @classmethod
@@ -157,6 +173,8 @@ class Project(NldBaseModel):
         metadata_backend_connector = from_dict.get("metadata_backend_connector")
         python_additional_paths = from_dict.get("python_additional_paths", {})
         variables = from_dict.get("variables", {})
+        properties = from_dict.get("properties")
+        environments = EnvironmentsConfig.from_dict(from_dict.get("environments", {}))
 
         if not name:
             raise NldProjectError("Project YAML must contain 'name' field")
@@ -201,6 +219,8 @@ class Project(NldBaseModel):
             entity_path=entity_path,
             python_additional_paths=python_additional_paths,
             variables=variables,
+            properties=properties,
+            environments=environments,
             entity_registry=NldEntityRegistry(
                 additional_entity_definitions=additional_entity_definitions,
             ),
@@ -212,10 +232,27 @@ class Project(NldBaseModel):
 
         return project
 
-    def load_entities(self, force_reload: bool = False) -> None:
+    def load_entities(
+        self,
+        force_reload: bool = False,
+        entity_types: list[str] | None = None,
+    ) -> None:
+        """Load project entities, optionally restricted to the given entity types.
+
+        When ``entity_types`` is provided, only those types and their transitively
+        required dependencies are loaded; otherwise every entity type is loaded.
+        """
+        requested_entity_definitions = (
+            None
+            if entity_types is None
+            else self.entity_registry.resolve_entity_definitions(
+                entity_names=entity_types,
+            )
+        )
         self.entity_registry.load_entities(
             root_directory=self.entities_root_folder_path,
             force_reload=force_reload,
+            requested_entity_definitions=requested_entity_definitions,
         )
         self._apply_structure_config_tags()
 

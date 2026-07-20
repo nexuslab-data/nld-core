@@ -148,6 +148,7 @@ class NldBaseModel(BaseModel):
         """
         data = self.model_dump(
             mode="python",
+            by_alias=True,
             exclude_none=exclude_none,
             exclude_unset=exclude_unset,
             exclude_defaults=exclude_defaults,
@@ -286,6 +287,7 @@ class NldBaseModel(BaseModel):
         path = Path(file_path)
         json_str = self.model_dump_json(
             indent=indent,
+            by_alias=True,
             exclude_none=exclude_none,
         )
         with path.open(mode="w", encoding="utf-8") as f:
@@ -317,6 +319,7 @@ class NldBaseModel(BaseModel):
         path = Path(file_path)
         data: dict[str, Any] = self.model_dump(
             mode="python",
+            by_alias=True,
             exclude_none=exclude_none,
         )
         if preserve_references and self._resolved_references:

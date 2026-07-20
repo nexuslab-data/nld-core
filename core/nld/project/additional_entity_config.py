@@ -22,6 +22,11 @@ class AdditionalEntityConfig(NldBaseModel):
     model_type: str
     name: str
     search_direction: SearchDirection = SEARCH_DIRECTION_PARENTS
+    # Additional entities are resolved by key from tasks (e.g. the data_product
+    # entity) regardless of the entity types a flow execution scopes to, so by
+    # default they are loaded on every load, including selective ones. Set to
+    # False to opt a custom entity into lazy/selective loading.
+    always_load: bool = True
 
     @field_validator("file_format")
     @classmethod
@@ -75,4 +80,5 @@ class AdditionalEntityConfig(NldBaseModel):
             file_format=self.file_format,
             folder_name=self.folder_name,
             search_direction=self.search_direction,
+            always_load=self.always_load,
         )

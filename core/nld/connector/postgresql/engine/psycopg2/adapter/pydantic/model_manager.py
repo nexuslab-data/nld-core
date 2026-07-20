@@ -572,5 +572,5 @@ class NldBaseModelPostgreSQLManager(NldBaseModelManager):
         # validate the same way regardless of the underlying column type.
         return [
             model_class.model_validate(_coerce_row_for_model(model_class, row))
-            for row in result.get_output_data_as_records()
+            for row in result.get_result_records()
         ]

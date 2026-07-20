@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Union, cast, get_args, get_origin
 
-from nld.connector.bigquery.bigquery_data_type import BigQueryDataTypes
+from nld.connector.bigquery.connector_definition import BigQueryDataTypes
 from nld.pydantic import BasePydanticStructureMapper, NldBaseModel
 from nld.structure import (
     Field,

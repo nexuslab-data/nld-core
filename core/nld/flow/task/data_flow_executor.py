@@ -1,5 +1,6 @@
 from typing import Any
 
+from nld.connector.base import UnavailableConnectionProfileException
 from nld.flow.definition.flow_definition import (
     DataFlowDefinition,
     NamespacedDataFlowDefinition,
@@ -14,7 +15,7 @@ from nld.parameters import ExecutionParameter, resolve_runtime_params
 from nld.parameters.parser import parse_parameters_from_cli
 from nld.task.context import NldExecutionContext
 from nld.task.context.request import TaskRequest
-from nld.utils import ModuleLoader
+from nld.utils import ModuleLoader, resolve_environment_variables
 
 from .data_flow_task import (
     DATA_CONNECTOR_INIT_PARAM_SUFFIX,
@@ -79,6 +80,12 @@ class DataFlowExecutor(NldLoggable):
             self.task_request = nld_context.task_request
             self.nld_execution_context = nld_context
 
+        # The global ``--profile-name`` CLI flag, when supplied, wins over
+        # any per-connection profile pinned in the flow definition.
+        self._cli_profile_name: str | None = self.task_request.get_parameters().get(
+            "profile_name",
+        )
+
         # --- Step 2: Check of data flow definition coherence (also loads task module)
         is_valid, error_messages = self.data_flow_definition.check_coherence(
             namespace=self.namespace,
@@ -91,6 +98,15 @@ class DataFlowExecutor(NldLoggable):
                 f"The data flow definition is not coherent. "
                 f"Please check the following messages: {'.'.join(error_messages)}"
             )
+
+        # --- Step 2.5: Resolve declared environment variables into the context
+        # so flow tasks can read them via execution_context.get_environment_variable
+        # instead of os.getenv. A missing required variable fails fast here.
+        self.nld_execution_context.set_flow_environment_variables(
+            resolve_environment_variables(
+                self.data_flow_definition.get_variables(),
+            )
+        )
 
         # --- Step 3: Validate runtime parameter types
         self._check_runtime_param_types()
@@ -145,6 +161,7 @@ class DataFlowExecutor(NldLoggable):
     def init_data_flow_task(
         self,
         connections_should_be_opened: bool = True,
+        extra_init_params: dict[str, Any] | None = None,
     ) -> DataFlowTask:
         """
         Initializes the data flow task.
@@ -153,6 +170,9 @@ class DataFlowExecutor(NldLoggable):
             connections_should_be_opened: Flag to indicate if connections
                 should be opened. By default is True. Can be useful during
                 testing.
+            extra_init_params: Init parameters applied last, overriding
+                the CLI-derived values — used by programmatic callers
+                (e.g. the deploy reload forcing ``full=True``).
 
         Returns:
             An initialized data flow task.
@@ -204,6 +224,9 @@ class DataFlowExecutor(NldLoggable):
                     if key in init_keys
                 }
             )
+
+        if extra_init_params:
+            init_params.update(extra_init_params)
 
         # --- Step 4: Check the init parameters validity for this task
         task_type.check_init_params_dict(init_params)
@@ -299,20 +322,52 @@ class DataFlowExecutor(NldLoggable):
         data_flow_definition: DataFlowDefinition,
         connections_should_be_opened: bool = True,
     ) -> None:
-        """Load all the connectors needed for this data flow definition execution."""
-        if not data_flow_definition.data_connectors:
-            return
+        """Load all the connectors needed for this data flow definition execution.
 
-        for (
-            connection_name
-        ) in self.data_flow_definition.get_connector_connection_names():
-            self.nld_execution_context.get_data_connector(
-                connection_name, open_connection=connections_should_be_opened
+        Each flow data connector is opened with its resolved credential
+        profile (CLI flag > per-connection definition profile > default).
+        The state backend side(s) are opened here too — building the
+        wrapper lazy-loads and opens each configured side with the same
+        precedence — so their profile is applied at connection load time.
+        """
+        for connector_name, connector_config in (
+            data_flow_definition.data_connectors or {}
+        ).items():
+            # CLI flag wins over the per-connection definition profile;
+            # None falls through to the connection's default profile.
+            profile_name = (
+                self._cli_profile_name
+                if self._cli_profile_name is not None
+                else connector_config.profile_name
             )
-        connector_names = ", ".join(
-            self.nld_execution_context.get_available_data_connector_names(),
+            try:
+                self.nld_execution_context.get_data_connector(
+                    connector_config.connector,
+                    profile_name=profile_name,
+                    open_connection=connections_should_be_opened,
+                )
+            except UnavailableConnectionProfileException as exc:
+                # Name the offending connector so the operator knows which
+                # definition entry carries the invalid profile.
+                exc.message = f"Connector '{connector_name}': {exc.message}"
+                exc.args = (exc.message,)
+                raise
+
+        # Opens the configured state backend side(s) with their resolved
+        # profile; returns None when no state backend is declared.
+        build_state_backend_connector_wrapper(
+            namespaced_data_flow_definition=self.namespaced_data_flow_definition,
+            execution_context=self.nld_execution_context,
+            open_connection=connections_should_be_opened,
+            override_profile_name=self._cli_profile_name,
         )
-        self.log_debug(f"Connectors loaded: {connector_names}")
+
+        available_connector_names = (
+            self.nld_execution_context.get_available_data_connector_names()
+        )
+        if available_connector_names:
+            connector_names = ", ".join(available_connector_names)
+            self.log_debug(f"Connectors loaded: {connector_names}")
 
     def _get_data_connectors_init_params(
         self,
@@ -320,7 +375,8 @@ class DataFlowExecutor(NldLoggable):
     ) -> dict[str, Any]:
         data_connector_init_param_mapping = data_flow_definition.data_connectors or {}
         data_connectors_init_params: dict[str, Any] = {}
-        for key, connection_name in data_connector_init_param_mapping.items():
+        for key, connector_config in data_connector_init_param_mapping.items():
+            connection_name = connector_config.connector
             if (
                 connection_name
                 in self.nld_execution_context.get_available_data_connector_names()
@@ -345,6 +401,7 @@ class DataFlowExecutor(NldLoggable):
             namespaced_data_flow_definition=self.namespaced_data_flow_definition,
             execution_context=self.nld_execution_context,
             open_connection=False,
+            override_profile_name=self._cli_profile_name,
         )
         if state_backend_connector_wrapper is not None:
             data_connectors_init_params["state_backend_connector_wrapper"] = (

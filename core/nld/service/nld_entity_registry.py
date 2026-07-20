@@ -6,10 +6,25 @@ from nld.flow.definition.flow_definition import (
     DataFlowDefinition,
     NamespacedDataFlowDefinition,
 )
-from nld.structure import StructureModel
+from nld.governance.ownership import (
+    FlowOwner,
+    NamespacedFlowOwner,
+    NamespacedStructureOwner,
+    StructureOwner,
+)
+from nld.scheduling import (
+    FlowScheduling,
+    NamespacedFlowSchedulingModel,
+)
+from nld.structure import StructureAudit, StructureModel
+from nld.structure.audit.structure_audit import NamespacedStructureAudit
 from nld.structure.field import FieldTemplate
 from nld.structure.field.field import Field, NamespacedField
 from nld.structure.field.field_adapter import FieldAdapter, NamespacedFieldAdapter
+from nld.structure.field.field_characterisation_definition import (
+    FieldCharacterisationDefinition,
+    NamespacedFieldCharacterisationDefinition,
+)
 from nld.structure.field.field_format_adapter import (
     FieldFormatAdapter,
     NamespacedFieldFormatAdapter,
@@ -29,6 +44,7 @@ from nld.structure.structure_model.structure_model import (
 
 from .entity_definition import (
     ENTITY_CATEGORY_DATA_FLOW,
+    ENTITY_CATEGORY_GOVERNANCE,
     ENTITY_CATEGORY_STRUCTURE,
     ENTITY_CATEGORY_STRUCTURE_CONFIGURATION,
     ENTITY_CATEGORY_VOCABULARY,
@@ -43,6 +59,7 @@ class EntityTypeNames:
     # Model entities
     FIELD = "field"
     FIELD_ADAPTER = "field_adapter"
+    FIELD_CHARACTERISATION_DEFINITION = "field_characterisation_definition"
     FIELD_FORMAT_ADAPTER = "field_format_adapter"
     FIELD_TEMPLATE = "field_template"
     STRUCTURE_ADAPTER = "structure_adapter"
@@ -51,12 +68,18 @@ class EntityTypeNames:
     # Structure entities
     STRUCTURE = "structure"
     STRUCTURE_MODEL = "structure_model"
+    STRUCTURE_AUDIT = "structure_audit"
 
     # Data Flow entities
     DATA_FLOW_DEFINITION = "flows"
+    FLOW_SCHEDULING = "scheduling"
 
     # Vocabulary entities
     BUSINESS_DICTIONARY = "business_dictionary"
+
+    # Governance entities
+    STRUCTURE_OWNER = "structure_owner"
+    FLOW_OWNER = "flow_owner"
 
 
 # Define all entity definitions
@@ -77,6 +100,14 @@ ALL_ENTITY_DEFINITIONS = [
         search_direction="parents",
         category=ENTITY_CATEGORY_STRUCTURE_CONFIGURATION,
         display_name="Field Adapter",
+    ),
+    EntityDefinition(
+        name=EntityTypeNames.FIELD_CHARACTERISATION_DEFINITION,
+        model_type=FieldCharacterisationDefinition,
+        folder_name="characterisations/field",
+        search_direction="parents",
+        category=ENTITY_CATEGORY_STRUCTURE_CONFIGURATION,
+        display_name="Field Characterisation Definition",
     ),
     EntityDefinition(
         name=EntityTypeNames.FIELD_FORMAT_ADAPTER,
@@ -125,6 +156,13 @@ ALL_ENTITY_DEFINITIONS = [
         category=ENTITY_CATEGORY_STRUCTURE,
         display_name="Structure Model",
     ),
+    EntityDefinition(
+        name=EntityTypeNames.STRUCTURE_AUDIT,
+        model_type=StructureAudit,
+        folder_name="audits/structure",
+        category=ENTITY_CATEGORY_STRUCTURE,
+        display_name="Structure Audit",
+    ),
     # Data Flow entities - search children (default)
     EntityDefinition(
         name=EntityTypeNames.DATA_FLOW_DEFINITION,
@@ -132,6 +170,13 @@ ALL_ENTITY_DEFINITIONS = [
         folder_name=f"{EntityTypeNames.DATA_FLOW_DEFINITION}",
         category=ENTITY_CATEGORY_DATA_FLOW,
         display_name="Data Flow Definition",
+    ),
+    EntityDefinition(
+        name=EntityTypeNames.FLOW_SCHEDULING,
+        model_type=FlowScheduling,
+        folder_name=f"{EntityTypeNames.FLOW_SCHEDULING}",
+        category=ENTITY_CATEGORY_DATA_FLOW,
+        display_name="Flow Scheduling",
     ),
     # Vocabulary entities - inherit from parent namespaces with nearest override
     EntityDefinition(
@@ -141,6 +186,23 @@ ALL_ENTITY_DEFINITIONS = [
         search_direction="parents",
         category=ENTITY_CATEGORY_VOCABULARY,
         display_name="Business Dictionary",
+    ),
+    # Governance entities - inherit from parent namespaces with nearest override
+    EntityDefinition(
+        name=EntityTypeNames.STRUCTURE_OWNER,
+        model_type=StructureOwner,
+        folder_name="governance/structure",
+        search_direction="parents",
+        category=ENTITY_CATEGORY_GOVERNANCE,
+        display_name="Structure Owner",
+    ),
+    EntityDefinition(
+        name=EntityTypeNames.FLOW_OWNER,
+        model_type=FlowOwner,
+        folder_name="governance/flow",
+        search_direction="parents",
+        category=ENTITY_CATEGORY_GOVERNANCE,
+        display_name="Flow Owner",
     ),
 ]
 
@@ -165,7 +227,42 @@ class NldEntityRegistry(EntityProvider):
             entity_definitions=[
                 *ALL_ENTITY_DEFINITIONS,
                 *additional_entity_definitions,
+            ],
+        )
+
+    def load_entities(
+        self,
+        root_directory: str,
+        fail_on_missing_folder: bool = False,
+        force_reload: bool = False,
+        requested_entity_definitions: list[EntityDefinition] | None = None,
+    ) -> None:
+        """Load entities, always including ``always_load`` entity types.
+
+        A selective load (``requested_entity_definitions`` set) restricts loading
+        to the requested types and their dependencies. Entity types flagged
+        ``always_load`` (e.g. project additional entities, resolved by key from
+        tasks regardless of the requested scope) must load even then, so they are
+        unioned into the requested set before delegating to the base loader. A
+        full load (``requested_entity_definitions=None``) already loads them.
+        """
+        if requested_entity_definitions is not None:
+            requested_names = {
+                definition.name for definition in requested_entity_definitions
+            }
+            requested_entity_definitions = [
+                *requested_entity_definitions,
+                *(
+                    definition
+                    for definition in self.entity_definitions
+                    if definition.always_load and definition.name not in requested_names
+                ),
             ]
+        super().load_entities(
+            root_directory=root_directory,
+            fail_on_missing_folder=fail_on_missing_folder,
+            force_reload=force_reload,
+            requested_entity_definitions=requested_entity_definitions,
         )
 
     # Field methods
@@ -323,6 +420,54 @@ class NldEntityRegistry(EntityProvider):
             )
             for key, wrapper in wrappers_dict.items()
         }
+
+    # Field Characterisation Definition methods
+    def get_field_characterisation_definition_dict(
+        self, namespace: str | None = None
+    ) -> dict[str, NamespacedFieldCharacterisationDefinition]:
+        wrappers_dict = self.get_entities_as_dict(
+            entity_type=EntityTypeNames.FIELD_CHARACTERISATION_DEFINITION,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return {
+            key: NamespacedFieldCharacterisationDefinition(
+                model=wrapper.model,
+                namespace=wrapper.namespace,
+            )
+            for key, wrapper in wrappers_dict.items()
+        }
+
+    def get_field_characterisation_definition_keys(
+        self, namespace: str | None = None
+    ) -> list[str]:
+        return self.get_entity_keys(
+            entity_type=EntityTypeNames.FIELD_CHARACTERISATION_DEFINITION,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+
+    def list_field_characterisation_definition_keys(
+        self, namespace: str | None = None
+    ) -> list[str]:
+        return self.list_entity_keys(
+            entity_type=EntityTypeNames.FIELD_CHARACTERISATION_DEFINITION,
+            namespace=namespace,
+        )
+
+    def get_field_characterisation_definition(
+        self, entity_key: str, namespace: str | None = None
+    ) -> NamespacedFieldCharacterisationDefinition:
+        wrapper = self.get_entity(
+            entity_type=EntityTypeNames.FIELD_CHARACTERISATION_DEFINITION,
+            entity_key=entity_key,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return NamespacedFieldCharacterisationDefinition(
+            model=wrapper.model,
+            namespace=wrapper.namespace,
+        )
 
     # Field Format Adapter methods
     def get_field_format_adapter_dict(
@@ -792,6 +937,50 @@ class NldEntityRegistry(EntityProvider):
             for key, wrapper in wrappers_dict.items()
         }
 
+    # Structure Audit methods
+    def get_structure_audit_dict(
+        self, namespace: str | None = None
+    ) -> dict[str, NamespacedStructureAudit]:
+        wrappers_dict = self.get_entities_as_dict(
+            entity_type=EntityTypeNames.STRUCTURE_AUDIT,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return {
+            key: NamespacedStructureAudit(
+                model=wrapper.model,
+                namespace=wrapper.namespace,
+            )
+            for key, wrapper in wrappers_dict.items()
+        }
+
+    def get_structure_audit_keys(self, namespace: str | None = None) -> list[str]:
+        return self.get_entity_keys(
+            entity_type=EntityTypeNames.STRUCTURE_AUDIT,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+
+    def list_structure_audit_keys(self, namespace: str | None = None) -> list[str]:
+        return self.list_entity_keys(
+            entity_type=EntityTypeNames.STRUCTURE_AUDIT,
+            namespace=namespace,
+        )
+
+    def get_structure_audit(
+        self, entity_key: str, namespace: str | None = None
+    ) -> NamespacedStructureAudit:
+        wrapper = self.get_entity(
+            entity_type=EntityTypeNames.STRUCTURE_AUDIT,
+            entity_key=entity_key,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return NamespacedStructureAudit(
+            model=wrapper.model,
+            namespace=wrapper.namespace,
+        )
+
     # DataFlow methods
     def get_data_flow_definition_dict(
         self, namespace: str | None = None
@@ -870,6 +1059,50 @@ class NldEntityRegistry(EntityProvider):
             for key, wrapper in wrappers_dict.items()
         }
 
+    # Flow Scheduling methods
+    def get_flow_scheduling_dict(
+        self, namespace: str | None = None
+    ) -> dict[str, NamespacedFlowSchedulingModel]:
+        wrappers_dict = self.get_entities_as_dict(
+            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return {
+            key: NamespacedFlowSchedulingModel(
+                model=wrapper.model,
+                namespace=wrapper.namespace,
+            )
+            for key, wrapper in wrappers_dict.items()
+        }
+
+    def get_flow_scheduling_keys(self, namespace: str | None = None) -> list[str]:
+        return self.get_entity_keys(
+            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+
+    def list_flow_scheduling_keys(self, namespace: str | None = None) -> list[str]:
+        return self.list_entity_keys(
+            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            namespace=namespace,
+        )
+
+    def get_flow_scheduling(
+        self, entity_key: str, namespace: str | None = None
+    ) -> NamespacedFlowSchedulingModel:
+        wrapper = self.get_entity(
+            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            entity_key=entity_key,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return NamespacedFlowSchedulingModel(
+            model=wrapper.model,
+            namespace=wrapper.namespace,
+        )
+
     # Business Dictionary methods
     def get_business_dictionary_dict(
         self, namespace: str | None = None
@@ -910,6 +1143,94 @@ class NldEntityRegistry(EntityProvider):
             use_search_direction=True,
         )
         return NamespacedBusinessDictionary(
+            model=wrapper.model,
+            namespace=wrapper.namespace,
+        )
+
+    # Structure Owner methods
+    def get_structure_owner_dict(
+        self, namespace: str | None = None
+    ) -> dict[str, NamespacedStructureOwner]:
+        wrappers_dict = self.get_entities_as_dict(
+            entity_type=EntityTypeNames.STRUCTURE_OWNER,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return {
+            key: NamespacedStructureOwner(
+                model=wrapper.model,
+                namespace=wrapper.namespace,
+            )
+            for key, wrapper in wrappers_dict.items()
+        }
+
+    def get_structure_owner_keys(self, namespace: str | None = None) -> list[str]:
+        return self.get_entity_keys(
+            entity_type=EntityTypeNames.STRUCTURE_OWNER,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+
+    def list_structure_owner_keys(self, namespace: str | None = None) -> list[str]:
+        return self.list_entity_keys(
+            entity_type=EntityTypeNames.STRUCTURE_OWNER,
+            namespace=namespace,
+        )
+
+    def get_structure_owner(
+        self, entity_key: str, namespace: str | None = None
+    ) -> NamespacedStructureOwner:
+        wrapper = self.get_entity(
+            entity_type=EntityTypeNames.STRUCTURE_OWNER,
+            entity_key=entity_key,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return NamespacedStructureOwner(
+            model=wrapper.model,
+            namespace=wrapper.namespace,
+        )
+
+    # Flow Owner methods
+    def get_flow_owner_dict(
+        self, namespace: str | None = None
+    ) -> dict[str, NamespacedFlowOwner]:
+        wrappers_dict = self.get_entities_as_dict(
+            entity_type=EntityTypeNames.FLOW_OWNER,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return {
+            key: NamespacedFlowOwner(
+                model=wrapper.model,
+                namespace=wrapper.namespace,
+            )
+            for key, wrapper in wrappers_dict.items()
+        }
+
+    def get_flow_owner_keys(self, namespace: str | None = None) -> list[str]:
+        return self.get_entity_keys(
+            entity_type=EntityTypeNames.FLOW_OWNER,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+
+    def list_flow_owner_keys(self, namespace: str | None = None) -> list[str]:
+        return self.list_entity_keys(
+            entity_type=EntityTypeNames.FLOW_OWNER,
+            namespace=namespace,
+        )
+
+    def get_flow_owner(
+        self, entity_key: str, namespace: str | None = None
+    ) -> NamespacedFlowOwner:
+        wrapper = self.get_entity(
+            entity_type=EntityTypeNames.FLOW_OWNER,
+            entity_key=entity_key,
+            namespace=namespace,
+            use_search_direction=True,
+        )
+        return NamespacedFlowOwner(
             model=wrapper.model,
             namespace=wrapper.namespace,
         )
