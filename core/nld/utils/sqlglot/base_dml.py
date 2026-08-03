@@ -84,11 +84,27 @@ class BaseSqlglotDMLBuilder:
     def build_values_clause(
         self,
         rows: list[tuple[Any, ...]],
+        trailing_expressions: list[str] | None = None,
     ) -> str:
-        """Build a VALUES clause from a list of row tuples."""
-        row_strings = [
-            f"({literal_list(list(row), dialect=self._dialect)})" for row in rows
-        ]
+        """Build a VALUES clause from a list of row tuples.
+
+        Args:
+            rows: the literal row tuples to render.
+            trailing_expressions: optional raw SQL expressions appended,
+                in order, to every row (e.g. ``["CURRENT_TIMESTAMP"]`` for a
+                technical tracking timestamp column). These are emitted
+                verbatim, not literalised, so the same expression evaluates
+                per inserted row.
+        """
+        extra = list(trailing_expressions or [])
+        row_strings: list[str] = []
+        for row in rows:
+            cells: list[str] = []
+            literals = literal_list(list(row), dialect=self._dialect)
+            if literals:
+                cells.append(literals)
+            cells.extend(extra)
+            row_strings.append("(" + ", ".join(cells) + ")")
         return "VALUES " + ", ".join(row_strings)
 
     def build_on_conflict_clause(
@@ -261,27 +277,50 @@ class BaseSqlglotDMLBuilder:
         insert_column_list: list[str],
         rows: list[tuple[Any, ...]],
         conflict_merge_fields: list[str] | None = None,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> str:
         """Build a complete INSERT statement with inlined values.
 
         Args:
             schema_name: target schema name.
             table_name: target table name.
-            insert_column_list: columns to insert into.
+            insert_column_list: columns to insert into (from the row tuples).
             rows: list of row tuples to insert.
             conflict_merge_fields: optional list of conflict
                 target columns for ON CONFLICT.
+            technical_tracking_timestamp_columns: optional mapping of column
+                name to a raw SQL expression (e.g.
+                ``{"ts_inserted_at": "CURRENT_TIMESTAMP"}``) appended to the
+                insert. Each column is added to the column list and its
+                expression is emitted for every row, so the technical tracking
+                timestamps are populated without appearing in the literal rows.
+            exclude_from_update: columns to omit from the ON CONFLICT
+                UPDATE SET clause (e.g. the insert-only timestamp).
+            expression_overrides: columns to set to a custom SQL expression
+                instead of EXCLUDED.col on update (e.g. the last-update
+                timestamp set to CURRENT_TIMESTAMP).
+            exclude_from_match: columns to keep in UPDATE SET but exclude from
+                the change-detection clause.
 
         Returns:
             A complete INSERT INTO ... VALUES ... SQL string.
         """
+        tracking_columns = technical_tracking_timestamp_columns or {}
+        effective_column_list = list(insert_column_list) + list(tracking_columns.keys())
+
         on_conflict = ""
         if conflict_merge_fields is not None:
             if len(conflict_merge_fields) > 0:
                 on_conflict = self.build_on_conflict_clause(
-                    insert_column_list=insert_column_list,
+                    insert_column_list=effective_column_list,
                     conflict_merge_fields=conflict_merge_fields,
                     table_name=table_name,
+                    exclude_from_update=exclude_from_update,
+                    expression_overrides=expression_overrides,
+                    exclude_from_match=exclude_from_match,
                 )
 
         table_ref = quote_table(
@@ -290,10 +329,13 @@ class BaseSqlglotDMLBuilder:
             dialect=self._dialect,
         )
         columns = identifier_list(
-            insert_column_list,
+            effective_column_list,
             dialect=self._dialect,
         )
-        values = self.build_values_clause(rows)
+        values = self.build_values_clause(
+            rows,
+            trailing_expressions=list(tracking_columns.values()),
+        )
 
         return f"INSERT INTO {table_ref} ({columns}) {values} {on_conflict};"
 

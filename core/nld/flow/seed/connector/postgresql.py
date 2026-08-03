@@ -51,10 +51,15 @@ class PostgreSQLSeedOverwriteStrategy(SeedWriteStrategy):
             return results
 
         column_list, tuple_rows = self._rows_to_tuples(rows)
+        tracking_columns = self._get_technical_tracking_timestamp_columns(
+            column_list=column_list,
+            target_structure=target_structure,
+        )
         batch_results = connector.bulk_insert_into(
             table_path=table_path,
             rows=tuple_rows,
             column_list=column_list,
+            technical_tracking_timestamp_columns=tracking_columns,
         )
         results.extend(batch_results)
 
@@ -94,10 +99,15 @@ class PostgreSQLSeedInsertStrategy(SeedWriteStrategy):
         )
 
         column_list, tuple_rows = self._rows_to_tuples(rows)
+        tracking_columns = self._get_technical_tracking_timestamp_columns(
+            column_list=column_list,
+            target_structure=target_structure,
+        )
         return connector.bulk_insert_into(
             table_path=table_path,
             rows=tuple_rows,
             column_list=column_list,
+            technical_tracking_timestamp_columns=tracking_columns,
         )
 
 
@@ -135,11 +145,22 @@ class PostgreSQLSeedUpsertStrategy(SeedWriteStrategy):
         pk_columns = self._get_primary_key_columns(target_structure)
 
         column_list, tuple_rows = self._rows_to_tuples(rows)
+        tracking_columns = self._get_technical_tracking_timestamp_columns(
+            column_list=column_list,
+            target_structure=target_structure,
+        )
+        exclude_from_update, expression_overrides, exclude_from_match = (
+            self._get_upsert_field_params(target_structure)
+        )
         return connector.bulk_insert_into(
             table_path=table_path,
             rows=tuple_rows,
             column_list=column_list,
             conflict_merge_fields=pk_columns,
+            technical_tracking_timestamp_columns=tracking_columns,
+            exclude_from_update=exclude_from_update,
+            expression_overrides=expression_overrides,
+            exclude_from_match=exclude_from_match,
         )
 
 

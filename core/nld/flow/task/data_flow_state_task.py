@@ -31,6 +31,7 @@ from nld.flow.task.data_flow_executor import (
 )
 from nld.flow.task.data_flow_state_renderers import (
     render_execution_history_text,
+    render_execution_overview_text,
     render_execution_state_text,
     render_execution_steps_text,
     render_incremental_state_text,
@@ -358,10 +359,15 @@ class FlowStateExecutionGetStepsTask(AbstractDataFlowStateTask):
             info = backend_manager.get_execution_info(self.flow_uid)
 
         steps = list(info.steps or []) if info is not None else []
+        # Prefix the steps table with the execution overview so the run
+        # is diagnosable without a separate get-history call.
+        steps_text = render_execution_steps_text(steps)
+        if info is not None:
+            steps_text = render_execution_overview_text(info) + steps_text
         self._persist_or_print(
             data=[s.model_dump(mode="json", exclude_none=True) for s in steps],
             file_name=FLOW_STATE_EXECUTION_GET_STEPS_FILE_NAME,
-            text=render_execution_steps_text(steps),
+            text=steps_text,
         )
         return True
 

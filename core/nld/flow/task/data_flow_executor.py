@@ -6,7 +6,7 @@ from nld.flow.definition.flow_definition import (
     NamespacedDataFlowDefinition,
 )
 from nld.flow.execution import FlowExecutionInfo
-from nld.flow.incremental.models import PlannedStateStrategy
+from nld.flow.incremental.models import PlannedStatePolicy
 from nld.flow.state.state_backend_connector_resolver import (
     build_state_backend_connector_wrapper,
 )
@@ -46,7 +46,7 @@ class DataFlowExecutor(NldLoggable):
         execution_name: str | None = None,
         params: dict[str, Any] | None = None,
         extra_args: list[str] | None = None,
-        planned_state_strategy: str = PlannedStateStrategy.AUTO,
+        planned_state_policy: str = PlannedStatePolicy.AUTO,
     ):
         """Ensures data flow definition is coherent.
 
@@ -57,7 +57,7 @@ class DataFlowExecutor(NldLoggable):
         self.namespaced_data_flow_definition = namespaced_data_flow_definition
         self.data_flow_definition = namespaced_data_flow_definition.model
         self.namespace = namespaced_data_flow_definition.namespace
-        self.planned_state_strategy = planned_state_strategy
+        self.planned_state_policy = planned_state_policy
 
         # --- Step 1: Initialize NLD Execution Context if not set
         nld_context = NldExecutionContext.get_current()
@@ -192,7 +192,7 @@ class DataFlowExecutor(NldLoggable):
         init_params["namespaced_data_flow_definition"] = (
             self.namespaced_data_flow_definition
         )
-        init_params["planned_state_strategy"] = self.planned_state_strategy
+        init_params["planned_state_policy"] = self.planned_state_policy
         init_params.update(self.data_flow_definition.get_params_model_dict_for_init())
         init_params.update(
             self._get_data_connectors_init_params(self.data_flow_definition)

@@ -303,6 +303,7 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
         execution_history: FlowExecutionHistory,
         new_execution_state: FlowExecutionState | None = None,
         saved_step_names: list[str] | None = None,
+        without_state: bool = False,
     ) -> None:
         """
         Save execution info and conditionally update the execution state.
@@ -320,13 +321,15 @@ class ExecutionBackendStateManager[DATA_CONNECTOR: DataConnector[Any]](NldMixIn,
             saved_step_names: Step names already saved
                 incrementally. These steps will be excluded from
                 the final save to avoid duplicates.
+            without_state: When True, never write the execution state
+                record — used by failed executions.
         """
         self.save_execution_info(
             current_execution_info=current_execution_info,
             saved_step_names=saved_step_names,
         )
         self.save_execution_history_complete(execution_history=execution_history)
-        if current_execution_info.data_load_strategy in [
+        if not without_state and current_execution_info.data_load_strategy in [
             FlowLoadingStrategies.FULL,
             FlowLoadingStrategies.DELTA,
             FlowLoadingStrategies.BACKFILL_DELTA,
@@ -395,8 +398,10 @@ class ExecutionStateManager(NldMixIn):
             self.previous_execution_state = FlowExecutionState()
             self.execution_history = FlowExecutionHistory(executions=[])
 
-    def update_execution_status_to_completed(self) -> None:
-        self.current_execution_info.update_execution_status_to_completed()
+    def update_execution_status_to_completed(self, with_warning: bool = False) -> None:
+        self.current_execution_info.update_execution_status_to_completed(
+            with_warning=with_warning,
+        )
 
     def update_execution_status_to_failed(
         self,
@@ -514,7 +519,7 @@ class ExecutionStateManager(NldMixIn):
                 )
         self._saved_step_names.append(step_info.step_name)
 
-    def save_all_execution_infos(self) -> None:
+    def save_all_execution_infos(self, without_state: bool = False) -> None:
         """
         Save the execution state to the backend.
 
@@ -524,6 +529,12 @@ class ExecutionStateManager(NldMixIn):
         the secondary backend (when configured), but the consolidated
         execution history is NOT mirrored: the secondary backend only holds
         per-execution info, never the global history artifact.
+
+        Args:
+            without_state: When True, the execution state record that
+                seeds the next incremental resume is not written — used
+                by failed executions so their finalized header and steps
+                still reach the history without advancing the state.
         """
         if self.execution_state_backend_manager is None:
             return
@@ -552,7 +563,7 @@ class ExecutionStateManager(NldMixIn):
         )
 
         # Save execution state (mirrored to secondary).
-        if self.current_execution_info.data_load_strategy in [
+        if not without_state and self.current_execution_info.data_load_strategy in [
             FlowLoadingStrategies.FULL,
             FlowLoadingStrategies.DELTA,
             FlowLoadingStrategies.BACKFILL_DELTA,

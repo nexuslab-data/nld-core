@@ -13,13 +13,13 @@ from nld.governance.ownership import (
     StructureOwner,
 )
 from nld.scheduling import (
-    FlowScheduling,
-    NamespacedFlowSchedulingModel,
+    FlowTask,
+    NamespacedFlowTaskModel,
 )
 from nld.structure import StructureAudit, StructureModel
 from nld.structure.audit.structure_audit import NamespacedStructureAudit
 from nld.structure.field import FieldTemplate
-from nld.structure.field.field import Field, NamespacedField
+from nld.structure.field.field import Field, NamespacedField, NamespacedFieldTemplate
 from nld.structure.field.field_adapter import FieldAdapter, NamespacedFieldAdapter
 from nld.structure.field.field_characterisation_definition import (
     FieldCharacterisationDefinition,
@@ -29,7 +29,6 @@ from nld.structure.field.field_format_adapter import (
     FieldFormatAdapter,
     NamespacedFieldFormatAdapter,
 )
-from nld.structure.field.field_template import NamespacedFieldTemplate
 from nld.structure.structure import (
     NamespacedStructureTemplate,
     Structure,
@@ -72,7 +71,7 @@ class EntityTypeNames:
 
     # Data Flow entities
     DATA_FLOW_DEFINITION = "flows"
-    FLOW_SCHEDULING = "scheduling"
+    FLOW_TASK = "scheduling"
 
     # Vocabulary entities
     BUSINESS_DICTIONARY = "business_dictionary"
@@ -172,11 +171,11 @@ ALL_ENTITY_DEFINITIONS = [
         display_name="Data Flow Definition",
     ),
     EntityDefinition(
-        name=EntityTypeNames.FLOW_SCHEDULING,
-        model_type=FlowScheduling,
-        folder_name=f"{EntityTypeNames.FLOW_SCHEDULING}",
+        name=EntityTypeNames.FLOW_TASK,
+        model_type=FlowTask,
+        folder_name=f"{EntityTypeNames.FLOW_TASK}",
         category=ENTITY_CATEGORY_DATA_FLOW,
-        display_name="Flow Scheduling",
+        display_name="Flow Task",
     ),
     # Vocabulary entities - inherit from parent namespaces with nearest override
     EntityDefinition(
@@ -1059,46 +1058,46 @@ class NldEntityRegistry(EntityProvider):
             for key, wrapper in wrappers_dict.items()
         }
 
-    # Flow Scheduling methods
-    def get_flow_scheduling_dict(
+    # Flow Task methods
+    def get_flow_task_dict(
         self, namespace: str | None = None
-    ) -> dict[str, NamespacedFlowSchedulingModel]:
+    ) -> dict[str, NamespacedFlowTaskModel]:
         wrappers_dict = self.get_entities_as_dict(
-            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            entity_type=EntityTypeNames.FLOW_TASK,
             namespace=namespace,
             use_search_direction=True,
         )
         return {
-            key: NamespacedFlowSchedulingModel(
+            key: NamespacedFlowTaskModel(
                 model=wrapper.model,
                 namespace=wrapper.namespace,
             )
             for key, wrapper in wrappers_dict.items()
         }
 
-    def get_flow_scheduling_keys(self, namespace: str | None = None) -> list[str]:
+    def get_flow_task_keys(self, namespace: str | None = None) -> list[str]:
         return self.get_entity_keys(
-            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            entity_type=EntityTypeNames.FLOW_TASK,
             namespace=namespace,
             use_search_direction=True,
         )
 
-    def list_flow_scheduling_keys(self, namespace: str | None = None) -> list[str]:
+    def list_flow_task_keys(self, namespace: str | None = None) -> list[str]:
         return self.list_entity_keys(
-            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            entity_type=EntityTypeNames.FLOW_TASK,
             namespace=namespace,
         )
 
-    def get_flow_scheduling(
+    def get_flow_task(
         self, entity_key: str, namespace: str | None = None
-    ) -> NamespacedFlowSchedulingModel:
+    ) -> NamespacedFlowTaskModel:
         wrapper = self.get_entity(
-            entity_type=EntityTypeNames.FLOW_SCHEDULING,
+            entity_type=EntityTypeNames.FLOW_TASK,
             entity_key=entity_key,
             namespace=namespace,
             use_search_direction=True,
         )
-        return NamespacedFlowSchedulingModel(
+        return NamespacedFlowTaskModel(
             model=wrapper.model,
             namespace=wrapper.namespace,
         )

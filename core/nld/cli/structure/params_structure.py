@@ -203,16 +203,8 @@ structure_audit_run_new_version = click.option(
     ),
 )
 
-structure_audit_render_override_output_folder_path = click.option(
-    "--override-output-folder-path",
-    "override_output_folder_path",
-    required=False,
-    default=None,
-    type=click.Path(file_okay=False, writable=True),
-    help=(
-        "Folder to write the rendered markdown into. When omitted, the report "
-        "is written to a timestamped folder under `output/`."
-    ),
+structure_audit_render_override_output_folder_path = params.override_output_folder_path(
+    "The file is the rendered markdown report.",
 )
 
 structure_audit_render_stdout = click.option(

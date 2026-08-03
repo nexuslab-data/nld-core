@@ -95,6 +95,42 @@ class FlowStepExecutionInfo(NldBaseModel):
         ]
         return " ".join(parts) if parts else None
 
+    def get_check_summary(self) -> str | None:
+        """Compact verdict summary for a data quality check step.
+
+        Renders ``PASS``/``WARN``/``FAIL``/``SKIP`` with the observed and
+        expected values from the check metadata, so violations are
+        readable in the text steps table without the JSON output. Returns
+        None for every other step category.
+        """
+        if self.step_category != FlowStepCategory.DATA_QUALITY:
+            return None
+        status = self.metadata.get("status")
+        if status is None:
+            return None
+        # The quality vocabulary is spelled out rather than imported: the
+        # quality package reaches back into this module for the step
+        # model, so importing it here would close the cycle.
+        if self.metadata.get("skipped"):
+            label = "SKIP"
+        elif status == "valid":
+            label = "PASS"
+        elif status == "warning" or self.metadata.get("severity") == "warning":
+            label = "WARN"
+        else:
+            label = "FAIL"
+        parts = [label]
+        violation_count = self.metadata.get("violation_count")
+        observed = self.metadata.get("observed")
+        expected = self.metadata.get("expected")
+        if violation_count is not None:
+            parts.append(f"violations={violation_count}")
+        if observed is not None:
+            parts.append(f"observed={observed}")
+        if expected is not None:
+            parts.append(f"expected={expected}")
+        return " ".join(parts)
+
     @staticmethod
     def _format_count_segment(
         label: str, success: int | None, error: int | None

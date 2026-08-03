@@ -12,9 +12,9 @@ from nld.flow.incremental.impl.by_key.backend.base_with_pydantic import (
     ByKeyStateBackendManager,
 )
 from nld.flow.incremental.impl.by_key.state import (
-    ByKeyPlannedProcessingDetailledState,
+    ByKeyPlannedProcessingDetailedState,
     ByKeyProcessingState,
-    ByKeySingleKeyPlannedProcessingDetailledState,
+    ByKeySingleKeyPlannedProcessingDetailedState,
     ByKeySingleKeyProcessingState,
     ByKeySingleKeyState,
     ByKeyState,
@@ -462,7 +462,7 @@ class PostgreSQLByKeyStateBackendManager(
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        detailled_state: ByKeyPlannedProcessingDetailledState,
+        detailed_state: ByKeyPlannedProcessingDetailedState,
     ) -> None:
         """Persist the per-key planned-state rows for a new PLANNED plan."""
         rows = [
@@ -471,11 +471,11 @@ class PostgreSQLByKeyStateBackendManager(
                 key_name=key_detail.name,
                 flow_namespace=self.flow_namespace,
                 flow_name=self.flow_name,
-                strategy=detailled_state.strategy,
+                strategy=detailed_state.strategy,
                 planned_processing_status=key_detail.planned_processing_status,
                 parameters=key_detail.parameters,
             )
-            for key_detail in detailled_state.keys.values()
+            for key_detail in detailed_state.keys.values()
         ]
         if not rows:
             return
@@ -491,7 +491,7 @@ class PostgreSQLByKeyStateBackendManager(
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> ByKeyPlannedProcessingDetailledState | None:
+    ) -> ByKeyPlannedProcessingDetailedState | None:
         """Reconstruct the by_key planned detail from its rows."""
         rows = cast(
             list[ByKeyPlannedProcessingStateRow],
@@ -504,9 +504,9 @@ class PostgreSQLByKeyStateBackendManager(
         )
         if not rows:
             return None
-        keys: dict[str, ByKeySingleKeyPlannedProcessingDetailledState] = {}
+        keys: dict[str, ByKeySingleKeyPlannedProcessingDetailedState] = {}
         for row in rows:
-            keys[row.key_name] = ByKeySingleKeyPlannedProcessingDetailledState(
+            keys[row.key_name] = ByKeySingleKeyPlannedProcessingDetailedState(
                 name=row.key_name,
                 planned_processing_status=(
                     row.planned_processing_status
@@ -514,7 +514,7 @@ class PostgreSQLByKeyStateBackendManager(
                 ),
                 parameters=row.parameters,
             )
-        return ByKeyPlannedProcessingDetailledState(
+        return ByKeyPlannedProcessingDetailedState(
             plan_state_uid=plan_state_uid,
             strategy=rows[0].strategy or "",
             keys=keys,

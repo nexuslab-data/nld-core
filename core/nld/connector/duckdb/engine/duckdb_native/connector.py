@@ -338,6 +338,10 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
         column_list: list[str],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Insert rows in batches and return one result per batch."""
         table_path = self.clean_object_path(table_path)
@@ -349,6 +353,10 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
             rows=rows,
             conflict_merge_fields=conflict_merge_fields,
             batch_size=batch_size,
+            technical_tracking_timestamp_columns=technical_tracking_timestamp_columns,
+            exclude_from_update=exclude_from_update,
+            expression_overrides=expression_overrides,
+            exclude_from_match=exclude_from_match,
         )
 
     def execute_bulk_insert_with_result(
@@ -359,6 +367,10 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
         rows: list[tuple[Any, ...]],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Execute a bulk INSERT and return one QueryExecResult per batch."""
         results: list[QueryExecResult] = []
@@ -372,6 +384,10 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
                     insert_column_list=column_list,
                     rows=batch,
                     conflict_merge_fields=conflict_merge_fields,
+                    technical_tracking_timestamp_columns=technical_tracking_timestamp_columns,
+                    exclude_from_update=exclude_from_update,
+                    expression_overrides=expression_overrides,
+                    exclude_from_match=exclude_from_match,
                 )
                 start_tst = get_current_datetime()
                 self.connection.execute(query)

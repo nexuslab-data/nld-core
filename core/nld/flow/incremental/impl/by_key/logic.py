@@ -11,6 +11,7 @@ from nld.flow.incremental.models import (
     FlowIncrementalParams,
     FlowSourceSelection,
     FlowTargetUpdateGranularity,
+    SourceAvailability,
 )
 from nld.flow.incremental.models.events import (
     IncrementalMissingParameter,
@@ -19,7 +20,7 @@ from nld.flow.incremental.models.events import (
 from nld.flow.utils import FlowLoadingStrategies
 
 from .state import (
-    ByKeyPlannedProcessingDetailledState,
+    ByKeyPlannedProcessingDetailedState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySourceState,
@@ -44,17 +45,18 @@ KEYS_PARAM = FlowIncrementalParamDefinition(
     allowed_values=None,
 )
 
-BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
+BY_KEY_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     default_strategy=FlowLoadingStrategies.DELTA,
-    name="BY_KEY_SOURCE_FULL",
+    name="BY_KEY",
     category="by_key",
     source_selection=FlowSourceSelection.BY_KEY,
+    source_availability=SourceAvailability.FULL,
     target_update_granularity=FlowTargetUpdateGranularity.BY_KEY,
     state_class=ByKeyState,
     source_state_class=ByKeySourceState,
     processing_state_class=ByKeyProcessingState,
     planned_processing_state_class=ByKeyPlannedProcessingState,
-    planned_processing_detailled_state_class=ByKeyPlannedProcessingDetailledState,
+    planned_processing_detailed_state_class=ByKeyPlannedProcessingDetailedState,
     auto_processing_state_transition=False,
     partial_state_persistence=True,
     requires_source_state_retrieval=True,
@@ -68,10 +70,8 @@ BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
 )
 
 
-class ByKeySourceFullFlowIncrementalParams(FlowIncrementalParams):
-    _definition: ClassVar[FlowIncrementalDefinition] = (
-        BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION
-    )
+class ByKeyFlowIncrementalParams(FlowIncrementalParams):
+    _definition: ClassVar[FlowIncrementalDefinition] = BY_KEY_INCREMENTAL_DEFINITION
     keys: list[str] | None = None
     limit: int | None = None
 
@@ -157,14 +157,12 @@ class ByKeySourceFullFlowIncrementalParams(FlowIncrementalParams):
             return (
                 False,
                 f"Strategy '{self.strategy}' is not supported for 'by_key' "
-                f"incremental mode. Supported strategies: "
+                f"incremental type. Supported strategies: "
                 f"DELTA, FULL, BACKFILL, BACKFILL-DELTA.",
             )
 
 
-BY_KEY_SOURCE_FULL_FLOW_INCREMENTAL_LOGIC = FlowIncrementalLogic[
-    ByKeySourceFullFlowIncrementalParams
-](
-    definition=BY_KEY_SOURCE_FULL_INCREMENTAL_DEFINITION,
-    parameter_class=ByKeySourceFullFlowIncrementalParams,
+BY_KEY_FLOW_INCREMENTAL_LOGIC = FlowIncrementalLogic[ByKeyFlowIncrementalParams](
+    definition=BY_KEY_INCREMENTAL_DEFINITION,
+    parameter_class=ByKeyFlowIncrementalParams,
 )

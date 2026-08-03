@@ -901,6 +901,10 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         column_list: list[str],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
         column_types: dict[str, str] | None = None,
     ) -> list[QueryExecResult]:
         """Insert rows in batches using multi-row INSERT statements.
@@ -920,6 +924,19 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         value seen per column across all rows, falling back to
         ``STRING`` for all-None columns.
         """
+        if any(
+            (
+                technical_tracking_timestamp_columns,
+                exclude_from_update,
+                expression_overrides,
+                exclude_from_match,
+            )
+        ):
+            raise NotImplementedError(
+                "BigQuery bulk_insert_into does not yet support technical "
+                "tracking timestamp injection or the ON CONFLICT upsert "
+                "parameters; these are implemented for PostgreSQL and DuckDB."
+            )
         table_path = self.clean_object_path(table_path)
         dataset, table_name = self._split_object_path(table_path)
         table_ref = quote_table(

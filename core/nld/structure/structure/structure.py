@@ -21,6 +21,10 @@ from nld.structure.exceptions import (
     NotAvailableFieldException,
 )
 from nld.structure.field import Field
+from nld.structure.field.field import (
+    FieldTemplateLineage,
+    FieldTemplateRelativePosition,
+)
 from nld.structure.field.field_characterisation_catalog import (
     CharacterisationValidationFinding,
 )
@@ -28,7 +32,6 @@ from nld.structure.field.field_characterisation_definition import (
     FieldCharacterisationDefinition,
     FieldCharacterisationDefinitionNames,
 )
-from nld.structure.field.field_template import FieldTemplateRelativePosition
 
 from .structure_characterisation import (
     StructureCharacterisation,
@@ -691,6 +694,22 @@ class Structure(NldNamedBaseModel):
                 result.append(field)
 
         return result
+
+    def get_direct_field_template_lineages(self) -> dict[str, FieldTemplateLineage]:
+        """Get lineages of fields directly based on a field template.
+
+        Keyed by the declared field name (not the template's embedded field
+        name) so SQL rendering aliases each expression to the actual column
+        even when the field was renamed through the fields dict key.
+        """
+        lineages: dict[str, FieldTemplateLineage] = {}
+        for field in self.fields.values():
+            if field.field_template is None:
+                continue
+            if field.field_template.lineage is None:
+                continue
+            lineages[field.name] = field.field_template.lineage
+        return lineages
 
     def get_all_tags(self) -> list[str]:
         """Get all tags including those from referenced templates.

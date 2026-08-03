@@ -1,5 +1,6 @@
 import click
 
+from nld.cli import params
 from nld.cli.utils.mutually_exclusive_option import MutuallyExclusiveOption
 from nld.utils import decorator_utils
 
@@ -38,6 +39,11 @@ deps_upstream = click.option(
     is_flag=True,
     default=False,
     help="Show only upstream lineage from the specified node.",
+)
+
+deps_override_output_folder_path = params.override_output_folder_path(
+    "The file is named `flow_dependency_graph.json` "
+    "(or `.mmd` with `--format mermaid`).",
 )
 
 deploy_downstream = click.option(
@@ -174,9 +180,9 @@ with_views = click.option(
     help="Include VIEW flows in execution. By default, views are skipped.",
 )
 
-planned_state_strategy = click.option(
-    "--planned-state-strategy",
-    "planned_state_strategy",
+planned_state_policy = click.option(
+    "--planned-state-policy",
+    "planned_state_policy",
     type=click.Choice(
         ["auto", "trust", "recompute", "strict"],
         case_sensitive=False,
@@ -204,16 +210,8 @@ state_output = click.option(
     ),
 )
 
-state_override_output_folder_path = click.option(
-    "--override-output-folder-path",
-    "override_output_folder_path",
-    type=click.Path(file_okay=False, writable=True),
-    required=False,
-    default=None,
-    help=(
-        "Folder to write the JSON result into; implies --output. The "
-        "file name is fixed per command."
-    ),
+state_override_output_folder_path = params.override_output_folder_path(
+    "Implies --output. The file name is fixed per command.",
 )
 
 state_display_format = click.option(

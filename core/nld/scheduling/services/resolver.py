@@ -3,12 +3,15 @@ from typing import TYPE_CHECKING
 from nld.flow.definition import DataFlowDefinition, NamespacedDataFlowDefinition
 from nld.pydantic import NldEntityReference
 from nld.scheduling.models import (
-    FlowScheduling,
+    FlowTask,
     FlowTrigger,
-    NamespacedFlowSchedulingModel,
+    NamespacedFlowTaskModel,
     ScheduleTrigger,
 )
-from nld.scheduling.scheduling_exceptions import NldSchedulingReferenceError
+from nld.scheduling.scheduling_exceptions import (
+    NldSchedulingPredecessorError,
+    NldSchedulingReferenceError,
+)
 from nld.scheduling.services.graph import SchedulingGraph
 
 if TYPE_CHECKING:
@@ -18,12 +21,12 @@ if TYPE_CHECKING:
 class SchedulingResolver:
     """Resolves the active scheduling graph for a single environment.
 
-    Nodes are scheduling entities (scheduled tasks) active in the requested
-    environment. Flow-trigger preconditions reference upstream schedulings, so
-    scheduling depends on scheduling. When a flow trigger has no explicit
-    preconditions, upstream schedulings are derived from the flow dependency
-    graph (a scheduling is upstream when the flow it schedules produces a
-    structure that is a predecessor of this scheduling's flow).
+    Nodes are FlowTask entities active in the requested environment.
+    Flow-trigger preconditions reference upstream tasks, so a task's trigger
+    can depend on another task. When a flow trigger has no explicit
+    preconditions, upstream tasks are derived from the flow dependency graph
+    (a task is upstream when the flow it schedules produces a structure that
+    is a predecessor of this task's flow).
     """
 
     def __init__(self, environment: str, registry: "NldEntityRegistry") -> None:
@@ -37,13 +40,13 @@ class SchedulingResolver:
         self._build_flow_indexes()
 
         graph = SchedulingGraph()
-        # node_id -> (scheduling model, scheduled flow id)
-        active_nodes: dict[str, tuple[FlowScheduling, str]] = {}
-        # scheduled flow id -> scheduling node id (for derivation)
+        # node_id -> (task model, scheduled flow id)
+        active_nodes: dict[str, tuple[FlowTask, str]] = {}
+        # scheduled flow id -> task node id (for derivation)
         flow_id_to_node: dict[str, str] = {}
 
-        for scheduling in self._registry.get_flow_scheduling_dict().values():
-            model = scheduling.model
+        for task in self._registry.get_flow_task_dict().values():
+            model = task.model
             if not model.is_active_in(self._environment):
                 continue
             env_scheduling = model.for_environment(self._environment)
@@ -52,16 +55,17 @@ class SchedulingResolver:
             flow_id = self._resolve_flow_reference(model.flow).id
             trigger = env_scheduling.trigger
             cron = trigger.cron if isinstance(trigger, ScheduleTrigger) else None
-            graph.add_flow(
-                node_id=scheduling.id,
-                namespace=str(scheduling.namespace),
-                flow_name=model.name,
+            graph.add_task(
+                node_id=task.id,
+                namespace=str(task.namespace),
+                task_name=model.name,
                 trigger_kind=trigger.kind,
                 cron=cron,
                 params=model.merged_params(self._environment),
+                frequency=model.resolved_frequency(self._environment),
             )
-            active_nodes[scheduling.id] = (model, flow_id)
-            flow_id_to_node[flow_id] = scheduling.id
+            active_nodes[task.id] = (model, flow_id)
+            flow_id_to_node[flow_id] = task.id
 
         self._add_trigger_edges(
             graph=graph,
@@ -73,10 +77,10 @@ class SchedulingResolver:
     def _add_trigger_edges(
         self,
         graph: SchedulingGraph,
-        active_nodes: dict[str, tuple[FlowScheduling, str]],
+        active_nodes: dict[str, tuple[FlowTask, str]],
         flow_id_to_node: dict[str, str],
     ) -> None:
-        """Add precondition edges between active schedulings.
+        """Add precondition edges between active tasks.
 
         External predecessors live in another data product: they are not
         resolved against the local registry, but are surfaced as external
@@ -87,40 +91,75 @@ class SchedulingResolver:
             trigger = env_scheduling.trigger if env_scheduling else None
             if not isinstance(trigger, FlowTrigger):
                 continue
-            if trigger.predecessors:
-                for predecessor in trigger.predecessors:
-                    if predecessor.external:
-                        self._add_external_edge(
-                            graph=graph,
-                            reference=predecessor.name,
-                            nld_project=predecessor.nld_project,
-                            downstream_node_id=node_id,
-                        )
-                        continue
-                    upstream_id = self._resolve_scheduling_reference(
-                        predecessor.name,
-                    ).id
-                    if upstream_id in active_nodes and upstream_id != node_id:
-                        graph.add_edge(
-                            upstream_node_id=upstream_id,
-                            downstream_node_id=node_id,
-                        )
-            else:
-                upstream_ids = self._derive_upstream_node_ids(
+            self._add_adjusted_lineage_edges(
+                graph=graph,
+                active_nodes=active_nodes,
+                flow_id_to_node=flow_id_to_node,
+                node_id=node_id,
+                flow_id=flow_id,
+                trigger=trigger,
+            )
+
+    def _add_adjusted_lineage_edges(
+        self,
+        graph: SchedulingGraph,
+        active_nodes: dict[str, tuple[FlowTask, str]],
+        flow_id_to_node: dict[str, str],
+        node_id: str,
+        flow_id: str,
+        trigger: FlowTrigger,
+    ) -> None:
+        """Add edges from explicit predecessors, or from the automatic lineage.
+
+        A non-empty ``predecessors`` list is a full override: the automatic
+        lineage is never derived, and the upstream set is exactly
+        ``get_all_predecessors()`` (``predecessors`` + ``additional_predecessors``,
+        net of ``excluded_predecessors``). Otherwise the final upstream set is
+        derived lineage | get_all_predecessors() (i.e. ``additional_predecessors``,
+        net of ``excluded_predecessors``), and a local addition already present
+        in the derived lineage is a configuration error.
+        """
+        is_override = bool(trigger.predecessors)
+        derived_ids: set[str] = set()
+        if not is_override:
+            derived_ids = set(
+                self._derive_upstream_node_ids(
                     flow_id=flow_id,
                     flow_id_to_node=flow_id_to_node,
                 )
-                for upstream_id in upstream_ids:
-                    if upstream_id in active_nodes and upstream_id != node_id:
-                        graph.add_edge(
-                            upstream_node_id=upstream_id,
-                            downstream_node_id=node_id,
-                        )
+            )
+
+        addition_ids: set[str] = set()
+        for addition in trigger.get_all_predecessors():
+            if addition.external:
+                self._add_external_edge(
+                    graph=graph,
+                    reference=addition.name,
+                    nld_project=addition.nld_project,
+                    downstream_node_id=node_id,
+                )
+                continue
+            addition_id = self._resolve_task_reference(addition.name).id
+            if not is_override and addition_id in derived_ids:
+                raise NldSchedulingPredecessorError(
+                    f"Task '{node_id}' declares '{addition_id}' in "
+                    "additional_predecessors, but it is already part of the "
+                    "automatically derived lineage."
+                )
+            addition_ids.add(addition_id)
+
+        upstream_ids = addition_ids if is_override else derived_ids | addition_ids
+        for upstream_id in upstream_ids:
+            if upstream_id in active_nodes and upstream_id != node_id:
+                graph.add_edge(
+                    upstream_node_id=upstream_id,
+                    downstream_node_id=node_id,
+                )
 
     @staticmethod
     def _add_external_edge(
         graph: SchedulingGraph,
-        reference: NldEntityReference[FlowScheduling],
+        reference: NldEntityReference[FlowTask],
         nld_project: str | None,
         downstream_node_id: str,
     ) -> None:
@@ -140,7 +179,7 @@ class SchedulingResolver:
         graph.add_external_source(
             node_id=external_id,
             namespace=namespace,
-            flow_name=entity_name,
+            task_name=entity_name,
         )
         graph.add_edge(
             upstream_node_id=external_id,
@@ -153,7 +192,7 @@ class SchedulingResolver:
         flow_id: str,
         flow_id_to_node: dict[str, str],
     ) -> list[str]:
-        """Derive upstream scheduling node ids from the flow's predecessors."""
+        """Derive upstream task node ids from the flow's predecessors."""
         namespaced_flow = self._flow_by_id.get(flow_id)
         if namespaced_flow is None:
             return []
@@ -189,20 +228,20 @@ class SchedulingResolver:
             )
         except (ValueError, RuntimeError) as error:
             raise NldSchedulingReferenceError(
-                f"Scheduling references unknown flow '{reference}': {error}"
+                f"Task references unknown flow '{reference}': {error}"
             ) from error
 
-    def _resolve_scheduling_reference(
+    def _resolve_task_reference(
         self,
-        reference: NldEntityReference[FlowScheduling],
-    ) -> NamespacedFlowSchedulingModel:
-        """Resolve a scheduling entity reference to its namespaced wrapper."""
+        reference: NldEntityReference[FlowTask],
+    ) -> NamespacedFlowTaskModel:
+        """Resolve a task entity reference to its namespaced wrapper."""
         try:
-            return self._registry.get_flow_scheduling(
+            return self._registry.get_flow_task(
                 entity_key=reference.entity_name,
                 namespace=str(reference.namespace),
             )
         except (ValueError, RuntimeError) as error:
             raise NldSchedulingReferenceError(
-                f"Precondition references unknown scheduling '{reference}': {error}"
+                f"Precondition references unknown task '{reference}': {error}"
             ) from error

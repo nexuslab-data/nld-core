@@ -7,7 +7,7 @@ from .logic import (
 from .manager import NoIncrementStateManager
 from .sql_filter_manager import NoIncrementSqlFilterManager
 from .state import (
-    NoIncrementPlannedProcessingDetailledState,
+    NoIncrementPlannedProcessingDetailedState,
     NoIncrementPlannedProcessingState,
     NoIncrementProcessingState,
     NoIncrementSourceState,
@@ -18,7 +18,7 @@ __all__ = [
     "NO_INCREMENT_FLOW_INCREMENTAL_LOGIC",
     "NO_INCREMENT_INCREMENTAL_DEFINITION",
     "NoIncrementFlowIncrementalParams",
-    "NoIncrementPlannedProcessingDetailledState",
+    "NoIncrementPlannedProcessingDetailedState",
     "NoIncrementPlannedProcessingState",
     "NoIncrementProcessingState",
     "NoIncrementSourceState",

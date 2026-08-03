@@ -55,6 +55,7 @@ def flow_info(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
 @params_flow.deps_namespace
 @params_flow.deps_downstream
 @params_flow.deps_upstream
+@params_flow.deps_override_output_folder_path
 def flow_deps(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
     """Output the flow dependency graph."""
     return execute_task(DataFlowDependencyGraphTask)  # type: ignore[no-any-return]
@@ -81,12 +82,15 @@ def flow_deps(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
 @params_flow.with_delta
 @params_flow.with_views
 @params_flow.state_compute_only
-@params_flow.planned_state_strategy
+@params_flow.planned_state_policy
 def flow_execute(
     ctx: click.Context,
     **kwargs: Any,
 ) -> Any:
     """Execute a data flow by name, or all flows in a namespace.
+
+    When neither --name nor --namespace is given, every flow in the
+    project is executed in dependency order.
 
     With --state-compute-only, the flow is not executed; instead the
     incremental processing state is computed and persisted, exactly like
@@ -104,10 +108,6 @@ def flow_execute(
     task_params = nld_execution_context.task_request.get_parameters()
 
     name = task_params.get("name")
-    namespace = task_params.get("namespace")
-
-    if name is None and namespace is None:
-        raise click.UsageError("Either --name or --namespace must be provided.")
 
     if task_params.get("state_compute_only"):
         # State compute is a single-flow operation backed by the same

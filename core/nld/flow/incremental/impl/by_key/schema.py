@@ -2,7 +2,7 @@ import pyarrow as pa
 
 from nld.engine.pyarrow import PyArrowPydanticStructureMapper
 from nld.flow.incremental.impl.by_key.state import (
-    ByKeySingleKeyPlannedProcessingDetailledState,
+    ByKeySingleKeyPlannedProcessingDetailedState,
     ByKeySingleKeyProcessingState,
     ByKeySingleKeyState,
 )
@@ -40,12 +40,12 @@ def get_by_key_planned_processing_detail_schema() -> pa.Schema:
     """
     Get the PyArrow schema for BY_KEY planned-detail Parquet files.
 
-    This schema matches the ByKeySingleKeyPlannedProcessingDetailledState model
+    This schema matches the ByKeySingleKeyPlannedProcessingDetailedState model
     fields. The parameters field is stored as JSON string.
 
     Returns:
         PyArrow schema for BY_KEY planned detail.
     """
     return PyArrowPydanticStructureMapper.get_pyarrow_schema(
-        ByKeySingleKeyPlannedProcessingDetailledState
+        ByKeySingleKeyPlannedProcessingDetailedState
     )

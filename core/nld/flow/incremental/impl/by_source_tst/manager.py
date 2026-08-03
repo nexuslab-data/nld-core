@@ -17,7 +17,7 @@ from .logic import (
     BySourceTstFlowIncrementalParams,
 )
 from .state import (
-    BySourceTstPlannedProcessingDetailledState,
+    BySourceTstPlannedProcessingDetailedState,
     BySourceTstPlannedProcessingState,
     BySourceTstProcessingState,
     BySourceTstSourceState,
@@ -45,7 +45,7 @@ class BySourceTstStateManager(
             BySourceTstSourceState,
             BySourceTstProcessingState,
             BySourceTstPlannedProcessingState,
-            BySourceTstPlannedProcessingDetailledState,
+            BySourceTstPlannedProcessingDetailedState,
         ]
         | None = None,
         secondary_incremental_state_backend_manager: IncrementalBackendStateManager[
@@ -54,7 +54,7 @@ class BySourceTstStateManager(
             BySourceTstSourceState,
             BySourceTstProcessingState,
             BySourceTstPlannedProcessingState,
-            BySourceTstPlannedProcessingDetailledState,
+            BySourceTstPlannedProcessingDetailedState,
         ]
         | None = None,
         parameters: dict[str, Any] | None = None,
@@ -116,8 +116,8 @@ class BySourceTstStateManager(
         A DELTA plan adds that its ``pull_from_timestamp`` still equals that
         baseline watermark, since DELTA derives its window from it.
         """
-        detailled_state = planned_processing_state.detailled_state
-        if detailled_state.strategy in [
+        detailed_state = planned_processing_state.detailed_state
+        if detailed_state.strategy in [
             FlowLoadingStrategies.BACKFILL,
             FlowLoadingStrategies.FULL,
         ]:
@@ -131,11 +131,11 @@ class BySourceTstStateManager(
             baseline_timestamp is None
             or planned_processing_state.status_changed_at > baseline_timestamp
         )
-        if detailled_state.strategy in [FlowLoadingStrategies.BACKFILL_DELTA]:
+        if detailed_state.strategy in [FlowLoadingStrategies.BACKFILL_DELTA]:
             return plan_changed_after_last_run
-        if detailled_state.strategy in [FlowLoadingStrategies.DELTA]:
+        if detailed_state.strategy in [FlowLoadingStrategies.DELTA]:
             return plan_changed_after_last_run and (
-                detailled_state.pull_from_timestamp == baseline_timestamp
+                detailed_state.pull_from_timestamp == baseline_timestamp
             )
         return True
 

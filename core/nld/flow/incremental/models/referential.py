@@ -6,8 +6,10 @@ from nld.utils import NldStrEnum
 
 
 class SourceAvailability(NldStrEnum):
-    ALWAYS_FULL = "ALWAYS_FULL"
-    PARTIALLY_AVAILABLE = "PARTIALLY_AVAILABLE"
+    # Whether one source read presents the complete extent of the
+    # dataset. Declarative for now; deletion inference builds on it.
+    FULL = "full"
+    PARTIAL = "partial"
 
 
 class FlowSourceSelection(NldStrEnum):

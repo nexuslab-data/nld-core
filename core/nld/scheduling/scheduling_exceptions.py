@@ -20,3 +20,8 @@ class NldSchedulingCycleError(NldSchedulingError):
         path = " -> ".join(cycle)
         self.message = f"Dependency cycle detected in scheduling graph: {path}"
         super().__init__(self.message)
+
+
+class NldSchedulingPredecessorError(NldSchedulingError):
+    CODE = 1403
+    MESSAGE = "NLD Scheduling Predecessor Error"

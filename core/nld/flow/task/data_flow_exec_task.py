@@ -3,7 +3,7 @@ from typing import Any, ClassVar
 from nld.flow.definition import NamespacedDataFlowDefinition
 from nld.flow.execution import FlowExecutionInfo, FlowExecutionInfoWrapper
 from nld.flow.graph import FLOW_NODE_TYPE, DataFlowGraph, strip_node_type_prefix
-from nld.flow.incremental.models import PlannedStateStrategy
+from nld.flow.incremental.models import PlannedStatePolicy
 from nld.flow.sql.task.sql_rendering_executor import SQLRenderingExecutor
 from nld.flow.utils import FlowExecStatus, FlowUpdateStrategies
 from nld.parameters.execution_params_def import (
@@ -22,8 +22,9 @@ class DataFlowExecutionTask(StandardTask):
     When a single flow ``name`` is provided, it is executed as a batch
     of one. When only a ``namespace`` is given, all flows in that
     namespace are discovered, ordered topologically, and executed
-    sequentially. On failure, transitive dependents are skipped while
-    independent flows continue.
+    sequentially. When neither is given, every flow in the project is
+    executed the same way. On failure, transitive dependents are
+    skipped while independent flows continue.
 
     The ``--upstream`` and ``--downstream`` flags expand the execution
     scope to include flows in the lineage of the specified flow or
@@ -59,7 +60,7 @@ class DataFlowExecutionTask(StandardTask):
             mandatory=False,
         ),
         ExecutionParameterDefinition(
-            name="planned_state_strategy",
+            name="planned_state_policy",
             mandatory=False,
         ),
     ]
@@ -73,7 +74,7 @@ class DataFlowExecutionTask(StandardTask):
         downstream: bool = False,
         upstream: bool = False,
         with_views: bool = False,
-        planned_state_strategy: str = PlannedStateStrategy.AUTO,
+        planned_state_policy: str = PlannedStatePolicy.AUTO,
         **kwargs: Any,
     ) -> None:
         """
@@ -81,13 +82,14 @@ class DataFlowExecutionTask(StandardTask):
 
         Args:
             name: Name of a single data flow to execute
-            namespace: Namespace whose flows should all be executed
+            namespace: Namespace whose flows should all be executed;
+                when both are omitted, every flow in the project runs
             render: When True, render SQL from flow metadata before executing
             downstream: Include downstream lineage flows
             upstream: Include upstream lineage flows
             with_views: When True, execute VIEW flows instead of skipping them
-            planned_state_strategy: How to react to an available planned state
-                (see ``PlannedStateStrategy``); defaults to AUTO.
+            planned_state_policy: How to react to an available planned state
+                (see ``PlannedStatePolicy``); defaults to AUTO.
             **kwargs: Additional arguments (e.g., exec_uuid)
         """
         super().__init__(**kwargs)
@@ -97,10 +99,7 @@ class DataFlowExecutionTask(StandardTask):
         self.downstream = downstream
         self.upstream = upstream
         self.with_views = with_views
-        self.planned_state_strategy = planned_state_strategy
-
-        if name is None and namespace is None:
-            raise ValueError("Either 'name' or 'namespace' must be provided.")
+        self.planned_state_policy = planned_state_policy
 
         if (downstream or upstream) and name is None and namespace is None:
             raise ValueError(
@@ -312,7 +311,7 @@ class DataFlowExecutionTask(StandardTask):
         executor = DataFlowExecutor(
             namespaced_data_flow_definition=namespaced_flow,
             params=self.execution_context.task_request.get_parameters(),
-            planned_state_strategy=self.planned_state_strategy,
+            planned_state_policy=self.planned_state_policy,
         )
         data_flow_task = executor.init_data_flow_task(
             connections_should_be_opened=True,

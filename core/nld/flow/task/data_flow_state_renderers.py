@@ -91,6 +91,38 @@ def render_execution_state_text(info: FlowExecutionInfo | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_execution_overview_text(info: FlowExecutionInfo) -> str:
+    """Render the general execution information as one line per field.
+
+    Shown at the top of the get-steps output so an execution can be
+    diagnosed without a second get-history call. Unlike the latest-state
+    view, the status, strategy and error are included here: get-steps
+    targets any execution, including failed ones.
+    """
+    duration = format_duration_between(start=info.started_at, end=info.ended_at)
+    pairs: list[tuple[str, str]] = [
+        ("Flow UID", info.flow_uid),
+        ("Status", info.execution_status or "N/A"),
+        ("Strategy", info.data_load_strategy),
+        ("Started at", format_datetime_for_display(info.started_at)),
+        ("Completed at", format_datetime_for_display(info.ended_at)),
+        ("Duration", duration or "N/A"),
+    ]
+    row_summary = info.get_row_count_summary()
+    if row_summary is not None:
+        # Drop the leading "Rows: " segment so the label aligns with the
+        # other rows under the shared label column.
+        pairs.append(("Rows", row_summary.removeprefix("Rows: ")))
+    if info.execution_error:
+        pairs.append(
+            ("Error", truncate(text=info.execution_error, max_length=120)),
+        )
+
+    lines: list[str] = [f"Execution: {info.flow_namespace}.{info.flow_name}"]
+    lines.extend(format_key_value_lines(pairs=pairs))
+    return "\n".join(lines) + "\n"
+
+
 def render_execution_history_text(history: FlowExecutionHistory) -> str:
     """Render the execution history as a fixed-width table.
 
@@ -133,13 +165,15 @@ def render_execution_steps_text(steps: list[FlowStepExecutionInfo]) -> str:
     """Render the steps of a single execution as a fixed-width table.
 
     The ``rows`` and ``files`` columns surface the per-step row counts
-    (source/target entries) and file-movement counts; the ``error``
-    column carries the step error. All three are declared droppable, so
-    the shared table renderer omits any of them entirely when no step
-    carries a value — e.g. a fully successful execution shows no ``error``
-    column, and steps without row metrics show no ``rows`` column. Counts
-    are formatted ``label:<success>[!<error>]`` — e.g. ``ins:1200`` or
-    ``src:500!3`` when 3 of the source entries failed.
+    (source/target entries) and file-movement counts; the ``check``
+    column carries the data quality verdict (PASS/WARN/FAIL/SKIP with
+    observed and expected values); the ``error`` column carries the step
+    error. All four are declared droppable, so the shared table renderer
+    omits any of them entirely when no step carries a value — e.g. a
+    fully successful execution shows no ``error`` column, and steps
+    without row metrics show no ``rows`` column. Counts are formatted
+    ``label:<success>[!<error>]`` — e.g. ``ins:1200`` or ``src:500!3``
+    when 3 of the source entries failed.
     """
     if not steps:
         return "No steps recorded for this execution.\n"
@@ -151,6 +185,7 @@ def render_execution_steps_text(steps: list[FlowStepExecutionInfo]) -> str:
         "duration",
         "rows",
         "files",
+        "check",
         "error",
     ]
     rows: list[list[str]] = []
@@ -168,13 +203,14 @@ def render_execution_steps_text(steps: list[FlowStepExecutionInfo]) -> str:
                 duration or "N/A",
                 step.get_entries_summary() or "",
                 step.get_files_summary() or "",
+                step.get_check_summary() or "",
                 truncate(text=step.step_error or "", max_length=60),
             ]
         )
     table_lines = format_aligned_table(
         headers=headers,
         rows=rows,
-        droppable_columns=("rows", "files", "error"),
+        droppable_columns=("rows", "files", "check", "error"),
     )
     return "\n" + "\n".join(table_lines) + "\n\n"
 

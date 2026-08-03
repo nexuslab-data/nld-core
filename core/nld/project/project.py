@@ -8,6 +8,8 @@ from nld.flow.incremental.models import FlowIncrementalTypeManifest
 from nld.flow.incremental.services.registry import (
     get_flow_incremental_type_registry,
 )
+from nld.flow.quality.models import DataQualityRuleManifest
+from nld.flow.quality.registry import get_data_quality_rule_registry
 from nld.pydantic import NldBaseModel
 from nld.service.nld_entity_registry import ALL_ENTITY_DEFINITIONS, NldEntityRegistry
 from nld.structure.config.structure_config import StructureProjectConfig
@@ -73,6 +75,35 @@ def _register_additional_incremental_types(
         registry.register(manifest=manifest)
 
 
+def _register_additional_quality_rules(
+    manifests: list[DataQualityRuleManifest],
+) -> None:
+    """Register external data quality rules declared in nld_project.yml.
+
+    Built-in rules are seeded in the registry when the rules package is
+    imported (see nld.flow.quality.rules). Importing that package here
+    guarantees built-ins are present before we check for name collisions,
+    regardless of the order modules were loaded in.
+
+    Only the manifest is registered here — the ``rule_class`` it points at
+    is resolved (imported, validated, instantiated) lazily, the first time
+    the rule name is looked up (see DataQualityRuleRegistry.get/has), not
+    on project load. This keeps loading a project from requiring another
+    project's Python code to be importable purely to inspect its metadata.
+    """
+    # Trigger built-in registration so name-collision detection is reliable.
+    import nld.flow.quality.rules  # noqa: F401
+
+    registry = get_data_quality_rule_registry()
+    for manifest in manifests:
+        if manifest.name in registry.names():
+            raise NldProjectError(
+                f"Additional data quality rule name '{manifest.name}' "
+                f"conflicts with an already registered rule"
+            )
+        registry.register_manifest(manifest=manifest)
+
+
 def _load_structure_config(root_path: str) -> StructureProjectConfig:
     """Load StructureProjectConfig from config/structure.yaml if available."""
     config_path = os.path.join(root_path, STRUCTURE_CONFIG_FILENAME)
@@ -87,6 +118,9 @@ class Project(NldBaseModel):
 
     additional_entities: list[AdditionalEntityConfig] = Field(default_factory=list)
     additional_incremental_types: list[FlowIncrementalTypeManifest] = Field(
+        default_factory=list,
+    )
+    additional_quality_rules: list[DataQualityRuleManifest] = Field(
         default_factory=list,
     )
     root_folder_path: str
@@ -202,6 +236,14 @@ class Project(NldBaseModel):
             manifests=additional_incremental_types,
         )
 
+        additional_quality_rules = [
+            DataQualityRuleManifest.model_validate(entry)
+            for entry in from_dict.get("additional_quality_rules", [])
+        ]
+        _register_additional_quality_rules(
+            manifests=additional_quality_rules,
+        )
+
         flow_config = _load_flow_config(
             root_path=root_folder_path,
         )
@@ -212,6 +254,7 @@ class Project(NldBaseModel):
         project = cls(
             additional_entities=additional_entities,
             additional_incremental_types=additional_incremental_types,
+            additional_quality_rules=additional_quality_rules,
             root_folder_path=root_folder_path,
             name=name,
             metadata_backend_connector=metadata_backend_connector,

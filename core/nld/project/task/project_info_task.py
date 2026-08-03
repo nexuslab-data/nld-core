@@ -58,6 +58,7 @@ class ProjectInfoTask(StandardTask):
         self._display_python_additional_paths(project=project)
         self._display_additional_entities(project=project)
         self._display_additional_incremental_types(project=project)
+        self._display_additional_quality_rules(project=project)
         self._display_variables(project=project)
 
         self.log_separator_line()
@@ -92,6 +93,13 @@ class ProjectInfoTask(StandardTask):
         self.log_info(f"  Additional incremental types: {len(entries)}")
         for entry in entries:
             self.log_info(f"    - {entry.name} (logic={entry.logic_module})")
+
+    def _display_additional_quality_rules(self, project: Project) -> None:
+        """Display additional data quality rules declared in the project."""
+        entries = project.additional_quality_rules
+        self.log_info(f"  Additional data quality rules: {len(entries)}")
+        for entry in entries:
+            self.log_info(f"    - {entry.name} (rule_class={entry.rule_class})")
 
     def _display_variables(self, project: Project) -> None:
         """Display project-level variables defined in nld_project.yml."""

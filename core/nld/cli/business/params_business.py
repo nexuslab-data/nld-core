@@ -1,5 +1,7 @@
 import click
 
+from nld.cli import params
+
 term = click.option(
     "--term",
     type=str,
@@ -41,14 +43,6 @@ output = click.option(
     ),
 )
 
-override_output_folder_path = click.option(
-    "--override-output-folder-path",
-    "override_output_folder_path",
-    type=click.Path(file_okay=False, writable=True),
-    required=False,
-    default=None,
-    help=(
-        "Folder to write the JSON result into; implies `--output`. The "
-        "file is named `business_dictionary_find.json`."
-    ),
+override_output_folder_path = params.override_output_folder_path(
+    "Implies `--output`. The file is named `business_dictionary_find.json`.",
 )

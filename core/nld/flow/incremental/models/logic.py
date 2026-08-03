@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import ConfigDict, PrivateAttr
 
+from nld.flow.incremental.models.referential import SourceAvailability
 from nld.parameters.execution_params_def import (
     ExecutionParameterDefinition,
 )
@@ -61,12 +62,17 @@ class FlowIncrementalDefinition(NldBaseModel):
     name: str
     category: str
     source_selection: str
+    # Whether one source read presents the complete extent (see
+    # SourceAvailability). Flows can override it per definition in
+    # their incremental config; declarative until deletion inference
+    # consumes it.
+    source_availability: str = SourceAvailability.FULL
     target_update_granularity: str
     state_class: type
     source_state_class: type
     processing_state_class: type
     planned_processing_state_class: type
-    planned_processing_detailled_state_class: type
+    planned_processing_detailed_state_class: type
     # When True, the framework automatically transitions the
     # processing state to SUCCEEDED or FAILED based on
     # the outcome of run_flow(). When False, the child task
@@ -85,7 +91,7 @@ class FlowIncrementalDefinition(NldBaseModel):
     tracks_state: bool = True
     requires_source_state_retrieval: bool = False
     # When True, the strategy can precompute a PLANNED processing
-    # state that a later run executes from (see PlannedStateStrategy).
+    # state that a later run executes from (see PlannedStatePolicy).
     # When False, every run recomputes the processing state and the
     # planned-state CLI commands report that plans are not supported.
     supports_planned_state: bool = False

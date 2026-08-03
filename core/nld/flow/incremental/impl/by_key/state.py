@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import Field
 
 from nld.flow.incremental.models import (
-    FlowPlannedProcessingDetailledState,
+    FlowPlannedProcessingDetailedState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
@@ -263,19 +263,19 @@ class ByKeyProcessingState(FlowProcessingState):
             key.set_to_be_processed()
 
 
-class ByKeySingleKeyPlannedProcessingDetailledState(NldBaseModel):
+class ByKeySingleKeyPlannedProcessingDetailedState(NldBaseModel):
     name: str
     planned_processing_status: str = IncrementalProcessingStatus.TO_BE_PROCESSED
     parameters: dict[str, Any] | None = None
 
 
-class ByKeyPlannedProcessingDetailledState(
-    FlowPlannedProcessingDetailledState[ByKeyProcessingState],
+class ByKeyPlannedProcessingDetailedState(
+    FlowPlannedProcessingDetailedState[ByKeyProcessingState],
 ):
     """Plan-time detail for a by_key PLANNED plan."""
 
     strategy: str
-    keys: dict[str, ByKeySingleKeyPlannedProcessingDetailledState]
+    keys: dict[str, ByKeySingleKeyPlannedProcessingDetailedState]
 
     def to_processing_state(self, flow_uid: str) -> ByKeyProcessingState:
         return ByKeyProcessingState(
@@ -296,12 +296,12 @@ class ByKeyPlannedProcessingDetailledState(
         cls,
         plan_state_uid: str,
         processing_state: ByKeyProcessingState,
-    ) -> "ByKeyPlannedProcessingDetailledState":
+    ) -> "ByKeyPlannedProcessingDetailedState":
         return cls(
             plan_state_uid=plan_state_uid,
             strategy=processing_state.strategy,
             keys={
-                name: ByKeySingleKeyPlannedProcessingDetailledState(
+                name: ByKeySingleKeyPlannedProcessingDetailedState(
                     name=key.name,
                     planned_processing_status=key.processing_status,
                     parameters=key.parameters,
@@ -312,6 +312,6 @@ class ByKeyPlannedProcessingDetailledState(
 
 
 class ByKeyPlannedProcessingState(
-    FlowPlannedProcessingState[ByKeyPlannedProcessingDetailledState],
+    FlowPlannedProcessingState[ByKeyPlannedProcessingDetailedState],
 ):
     """A PLANNED plan carrying a by_key planned-detail payload."""

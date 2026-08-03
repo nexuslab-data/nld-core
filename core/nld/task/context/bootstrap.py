@@ -54,7 +54,7 @@ def init_execution_context(
         ...     root_folder_path="/path/to/project",
         ...     entity_types=["data_flow_definition", "scheduling"],
         ... )
-        >>> schedulings = context.entity_registry.get_flow_scheduling_dict()
+        >>> tasks = context.entity_registry.get_flow_task_dict()
     """
     params: dict[str, Any] = dict(extra_params) if extra_params is not None else {}
     if config_folder_path is not None:

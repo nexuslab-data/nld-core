@@ -1,8 +1,4 @@
 from .config import IncrementalConfig
-from .constants import (
-    GENERAL_STATE_NAME,
-    PROCESSED_STATE_NAME,
-)
 from .logic import (
     FULL_FLAG_PARAM,
     WITH_DELTA_FLAG_PARAM,
@@ -34,14 +30,14 @@ from .request import (
     FlowRequestType,
 )
 from .state import (
-    PLANNED_STATE_STRATEGIES,
-    FlowPlannedProcessingDetailledState,
+    PLANNED_STATE_POLICIES,
+    FlowPlannedProcessingDetailedState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
     FlowState,
     FlowStatePlan,
-    PlannedStateStrategy,
+    PlannedStatePolicy,
 )
 
 __all__ = [
@@ -57,7 +53,7 @@ __all__ = [
     "FlowIncrementalPeriodRangeType",
     "FlowIncrementalType",
     "FlowIncrementalTypeManifest",
-    "FlowPlannedProcessingDetailledState",
+    "FlowPlannedProcessingDetailedState",
     "FlowPlannedProcessingState",
     "FlowProcessingState",
     "FlowRequest",
@@ -68,16 +64,14 @@ __all__ = [
     "FlowState",
     "FlowStatePlan",
     "FlowTargetUpdateGranularity",
-    "GENERAL_STATE_NAME",
     "INCREMENTAL_PLAN_STATUS",
     "INCREMENTAL_PROCESSING_STATUS",
     "IncrementalConfig",
     "IncrementalPlanStatus",
     "IncrementalProcessingStatus",
     "IncrementalStateStatus",
-    "PLANNED_STATE_STRATEGIES",
-    "PROCESSED_STATE_NAME",
-    "PlannedStateStrategy",
+    "PLANNED_STATE_POLICIES",
+    "PlannedStatePolicy",
     "SourceAvailability",
     "WITH_DELTA_FLAG_PARAM",
 ]

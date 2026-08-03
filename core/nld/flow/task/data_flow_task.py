@@ -11,6 +11,7 @@ from nld.flow.definition import (
     NamespacedDataFlowDefinition,
 )
 from nld.flow.exceptions import (
+    DataQualityBlockingViolationException,
     NoPlannedStateException,
     StalePlannedStateException,
 )
@@ -22,7 +23,21 @@ from nld.flow.incremental.impl.no_increment.logic import (
 from nld.flow.incremental.models import (
     FlowIncrementalLogic,
     IncrementalConfig,
-    PlannedStateStrategy,
+    PlannedStatePolicy,
+)
+from nld.flow.quality import (
+    DataQualityCheckResult,
+    DataQualityContext,
+    FlowDataQualityService,
+    resolve_effective_checks,
+)
+
+# Imported from the submodule on purpose: the quality package root does
+# not re-export the step converter to keep the flow definition free of a
+# circular chain through the execution package.
+from nld.flow.quality.step_converter import (
+    build_data_quality_failure_step,
+    convert_data_quality_check_result_to_step,
 )
 from nld.flow.state.factory import FlowStateManagerFactory
 from nld.flow.state.manager import FlowStateManager
@@ -31,7 +46,6 @@ from nld.flow.state.state_backend_connector_resolver import (
 )
 from nld.flow.utils import (
     FlowExecStatus,
-    FlowLoadingStrategies,
     FlowStepCategory,
 )
 from nld.parameters.execution_params_def import (
@@ -76,7 +90,7 @@ class DataFlowTask(BaseTask, abc.ABC):
         namespace: str | None = None,
         instance_name: str | None = None,
         started_at: datetime.datetime | None = None,
-        planned_state_strategy: str = PlannedStateStrategy.AUTO,
+        planned_state_policy: str = PlannedStatePolicy.AUTO,
         **kwargs: Any,
     ):
         if namespaced_data_flow_definition is not None and namespace is not None:
@@ -114,8 +128,9 @@ class DataFlowTask(BaseTask, abc.ABC):
 
         self._state_backend_connector_wrapper = state_backend_connector_wrapper
         self._state_manager: FlowStateManager[Any, Any, Any, Any] | None = None
+        self._data_quality_service: FlowDataQualityService | None = None
         self.namespaced_data_flow_definition = namespaced_data_flow_definition
-        self.planned_state_strategy = planned_state_strategy
+        self.planned_state_policy = planned_state_policy
 
         self._incremental_init_params = (
             self.incremental_logic.definition.create_incremental_parameters(**kwargs)
@@ -380,7 +395,7 @@ class DataFlowTask(BaseTask, abc.ABC):
     def get_incremental_state(self) -> None:
         """Use an available planned state or compute one, per the strategy.
 
-        Honors ``planned_state_strategy`` (see ``PlannedStateStrategy``):
+        Honors ``planned_state_policy`` (see ``PlannedStatePolicy``):
         RECOMPUTE always computes; AUTO/STRICT/TRUST consult the active
         PLANNED plan and, except for TRUST, validate it against the latest
         incremental state before using it.
@@ -402,7 +417,7 @@ class DataFlowTask(BaseTask, abc.ABC):
             return
 
         # Plans are possible here, so honor the planned-state strategy.
-        if self.planned_state_strategy == PlannedStateStrategy.RECOMPUTE:
+        if self.planned_state_policy == PlannedStatePolicy.RECOMPUTE:
             self.compute_incremental_state()
             return
 
@@ -411,7 +426,7 @@ class DataFlowTask(BaseTask, abc.ABC):
         )
 
         if available_planned_processing_state is None:
-            if self.planned_state_strategy == PlannedStateStrategy.STRICT:
+            if self.planned_state_policy == PlannedStatePolicy.STRICT:
                 raise NoPlannedStateException(
                     flow_namespace=self.flow_execution_info.flow_namespace,
                     flow_name=self.flow_execution_info.flow_name,
@@ -432,15 +447,15 @@ class DataFlowTask(BaseTask, abc.ABC):
             available_planned_processing_state.requestor
             and available_planned_processing_state.requestor.startswith("deploy:"),
         )
-        if not is_deploy_created_plan and self.planned_state_strategy in [
-            PlannedStateStrategy.AUTO,
-            PlannedStateStrategy.STRICT,
+        if not is_deploy_created_plan and self.planned_state_policy in [
+            PlannedStatePolicy.AUTO,
+            PlannedStatePolicy.STRICT,
         ]:
             is_fresh = self.state_manager.is_planned_processing_state_fresh(
                 planned_processing_state=available_planned_processing_state,
             )
             if not is_fresh:
-                if self.planned_state_strategy == PlannedStateStrategy.STRICT:
+                if self.planned_state_policy == PlannedStatePolicy.STRICT:
                     raise StalePlannedStateException(
                         plan_state_uid=available_planned_processing_state.plan_state_uid,
                     )
@@ -661,18 +676,17 @@ class DataFlowTask(BaseTask, abc.ABC):
         self._save_last_step_to_backend()
 
     def post_processing_for_execution(self) -> None:
-        """Update and save execution state on successful runs only."""
+        """Update and save execution state on successful runs only.
+
+        A failed run still persists its finalized execution header so
+        the history shows FAILED and the completion timestamp, but the
+        global execution state never advances on failure.
+        """
         if (
             self.state_manager.current_execution_info.execution_status
             == FlowExecStatus.FAILED
-            or self.state_manager.data_load_strategy
-            not in [
-                FlowLoadingStrategies.FULL,
-                FlowLoadingStrategies.DELTA,
-                FlowLoadingStrategies.BACKFILL,
-                FlowLoadingStrategies.BACKFILL_DELTA,
-            ]
         ):
+            self.state_manager.save_all_execution_infos(without_state=True)
             return
         self.state_manager.update_global_execution_state()
         self.state_manager.save_all_execution_infos()
@@ -683,6 +697,150 @@ class DataFlowTask(BaseTask, abc.ABC):
 
         Can be used to initialize some specific run variables.
         """
+
+    # Data quality methods
+    def get_data_quality_context(self) -> DataQualityContext | None:
+        """Build the quality context; None disables checks for this task.
+
+        Called once per run, when the service is created, which then owns
+        the returned context. The base task has no generically resolvable
+        SQL target, so checks are off unless a subclass provides its
+        target connector and qualified table path (SQL and seed flow
+        tasks do).
+        """
+        return None
+
+    def _build_sql_target_data_quality_context(
+        self,
+        connector: Any,
+        target_schema: str,
+    ) -> DataQualityContext:
+        """Build the quality context of a flow writing to a SQL target."""
+        definition = self.data_flow_definition
+        if definition is None:
+            raise ValueError(
+                "A data flow definition is required to build the data quality context"
+            )
+        return DataQualityContext(
+            connector=connector,
+            table_path=f"{target_schema}.{definition.name}",
+        )
+
+    def _get_data_quality_service(self) -> FlowDataQualityService:
+        """Resolve the checks and target context once, cache the service.
+
+        The service owns the context for the whole run, so the target is
+        resolved a single time and the baseline captured before the write
+        reaches the evaluation without any re-injection.
+        """
+        if self._data_quality_service is not None:
+            return self._data_quality_service
+        definition = self.data_flow_definition
+        self._data_quality_service = FlowDataQualityService(
+            checks=resolve_effective_checks(
+                quality_checks=(
+                    definition.quality_checks if definition is not None else None
+                ),
+            ),
+            context=self.get_data_quality_context(),
+        )
+        return self._data_quality_service
+
+    def _has_data_quality_checks_enabled(self) -> bool:
+        """Whether the flow definition declares any enabled quality check."""
+        definition = self.data_flow_definition
+        return definition is not None and definition.has_quality_checks_enabled
+
+    def pre_processing_for_data_quality(self) -> None:
+        """Prepare the data quality evaluation before the write.
+
+        Today this captures the pre-write row count needed by the
+        baseline-dependent checks; kept generic so future rules can hook
+        more preparation here. A failure (e.g. table not created yet)
+        only logs a warning and leaves the baseline unset, which makes
+        the baseline-dependent checks report themselves as skipped.
+        """
+        try:
+            self._get_data_quality_service().capture_baseline()
+        except Exception as ex:
+            self.log_warn(f"Data quality baseline capture failed: {ex}")
+
+    def run_data_quality_checks(self) -> bool:
+        """Run the resolved data quality checks against the written target.
+
+        The service owns the whole evaluation; this method converts the
+        results into steps, logs them, raises
+        ``DataQualityBlockingViolationException`` on a blocking outcome —
+        after every result is recorded — and returns True when the
+        execution must complete with a warning (any other non-valid
+        outcome). A measurement failure only logs and records a failed
+        step: like the technical-timestamps step, a broken check
+        infrastructure must not degrade an execution whose data was
+        written successfully.
+        """
+        try:
+            service = self._get_data_quality_service()
+            results = service.run_checks_on_target()
+        except Exception as ex:
+            self.log_warn(f"Data quality checks could not be evaluated: {ex}")
+            self._append_data_quality_failure_step(error_message=str(ex))
+            return False
+
+        self._append_steps_from_data_quality_check_results(results=results)
+        service.log_check_results(results=results)
+
+        blocking_messages = [
+            result.message or result.get_step_name()
+            for result in results
+            if result.is_blocking
+        ]
+        if blocking_messages:
+            raise DataQualityBlockingViolationException(
+                violation_messages=blocking_messages,
+            )
+        return any(not result.is_valid and not result.is_blocking for result in results)
+
+    def _append_steps_from_data_quality_check_results(
+        self,
+        results: list[DataQualityCheckResult],
+    ) -> None:
+        """Convert check results to steps and append to execution info."""
+        self._append_data_quality_steps(
+            step_infos=[
+                convert_data_quality_check_result_to_step(
+                    result,
+                    flow_uid=self.flow_execution_info.flow_uid,
+                )
+                for result in results
+            ],
+        )
+
+    def _append_data_quality_failure_step(self, error_message: str) -> None:
+        """Record a measurement failure so it stays visible in the steps."""
+        self._append_data_quality_steps(
+            step_infos=[
+                build_data_quality_failure_step(
+                    flow_uid=self.flow_execution_info.flow_uid,
+                    error_message=error_message,
+                ),
+            ],
+        )
+
+    def _append_data_quality_steps(self, step_infos: list[Any]) -> None:
+        """Append converted quality steps and persist them if enabled.
+
+        The steps come from the quality step converter; they are typed
+        loosely on purpose so the step model stays out of this module.
+        """
+        for step_info in step_infos:
+            if self.flow_execution_info.steps is None:
+                self.flow_execution_info.steps = []
+            self.flow_execution_info.steps.append(step_info)
+            if (
+                self._state_manager is not None
+                and self._is_immediate_step_persistence_enabled()
+            ):
+                self.state_manager.save_step_completed(step_info=step_info)
 
     # Logging and persistence helpers
     def _is_immediate_step_persistence_enabled(self) -> bool:
@@ -710,11 +868,20 @@ class DataFlowTask(BaseTask, abc.ABC):
         """
         self.pre_processing()
         self.state_manager.save_execution_start()
+        if self._has_data_quality_checks_enabled():
+            self.pre_processing_for_data_quality()
 
         flow_error: Exception | None = None
         try:
             self.run_flow()
-            self.state_manager.update_execution_status_to_completed()
+            data_quality_warning = (
+                self.run_data_quality_checks()
+                if self._has_data_quality_checks_enabled()
+                else False
+            )
+            self.state_manager.update_execution_status_to_completed(
+                with_warning=data_quality_warning,
+            )
         except Exception as ex:
             flow_error = ex
             self.state_manager.update_execution_status_to_failed(

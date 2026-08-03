@@ -12,6 +12,8 @@ from nld.flow.config import (
 from nld.flow.definition.field_lineage import FieldLineage
 from nld.flow.definition.sql_config import SQLConfig
 from nld.flow.incremental.models import FlowIncrementalLogic, IncrementalConfig
+from nld.flow.quality.models import DataQualityChecksConfig
+from nld.flow.quality.service import validate_quality_checks
 from nld.misc import EnvironmentVariableDefinition
 from nld.parameters import ExecutionParameter, create_model_dict
 from nld.pydantic import (
@@ -122,6 +124,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     target_from_sources_mapping: dict[str, FieldLineage] | None = None
     target_structure: NldEntityReference[Structure] | None = None
     write_strategy: str | None = None
+    quality_checks: DataQualityChecksConfig | None = None
 
     @field_validator("target_from_sources_mapping", mode="before")
     @classmethod
@@ -145,7 +148,27 @@ class DataFlowDefinition(NldNamedBaseModel):
     ) -> dict[str, Any] | None:
         """Normalize a plain string into an IncrementalConfig dict."""
         if isinstance(value, str):
-            return {"strategy": value}
+            return {"type": value}
+        return value
+
+    @field_validator("quality_checks", mode="before")
+    @classmethod
+    def normalize_quality_checks(
+        cls,
+        value: Any,
+    ) -> Any:
+        """Normalize the shorthand forms of ``quality_checks``.
+
+        Accepts, in addition to the canonical mapping: ``false`` to
+        disable the whole step, ``true`` as an explicit no-op, and a
+        bare list of checks.
+        """
+        if value is False:
+            return {"enabled": False}
+        if value is True:
+            return {}
+        if isinstance(value, list):
+            return {"checks": value}
         return value
 
     @field_validator("params", mode="before")
@@ -245,6 +268,23 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         return resolve_sqlglot_dialect(target_structure.connector_type)
 
+    @property
+    def has_quality_checks(self) -> bool:
+        """Whether the definition declares at least one data quality check.
+
+        Pure configuration presence: disabled checks and a disabled block
+        still count as declared. Use ``has_quality_checks_enabled`` to know
+        whether the quality step will actually run.
+        """
+        return self.quality_checks is not None and len(self.quality_checks.checks) > 0
+
+    @property
+    def has_quality_checks_enabled(self) -> bool:
+        """Whether at least one declared data quality check will run."""
+        if self.quality_checks is None or not self.quality_checks.enabled:
+            return False
+        return any(check.enabled for check in self.quality_checks.checks)
+
     def resolve_target_structure(self) -> Structure:
         """Resolve the target_structure reference to a deep-copied Structure."""
         if self.target_structure is None:
@@ -341,7 +381,33 @@ class DataFlowDefinition(NldNamedBaseModel):
             additional_task_paths=additional_task_paths,
         )
 
+        self._check_quality_checks(errors=errors)
+
         return len(errors) == 0, errors
+
+    def _check_quality_checks(self, errors: list[str]) -> None:
+        """Validate the quality_checks block against the available rules.
+
+        Column existence is validated best-effort: outside a loaded entity
+        registry the target structure cannot resolve, and the rule and
+        param validation must still surface. Declared checks are validated
+        even when disabled — they stay part of the configuration and may
+        be re-enabled at any time.
+        """
+        if not self.has_quality_checks:
+            return
+        target_structure: Structure | None = None
+        if self.target_structure is not None:
+            try:
+                target_structure = self.resolve_target_structure()
+            except Exception:
+                target_structure = None
+        errors.extend(
+            validate_quality_checks(
+                quality_checks=self.quality_checks,
+                target_structure=target_structure,
+            ),
+        )
 
     def _resolve_task_module_path(
         self,
@@ -675,7 +741,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         if self.incremental is not None:
             logic = IncrementalStateManagerFactory().get_incremental_logic(
-                incremental_type=self.incremental.strategy,
+                incremental_type=self.incremental.type,
             )
         else:
             if task_class is None:

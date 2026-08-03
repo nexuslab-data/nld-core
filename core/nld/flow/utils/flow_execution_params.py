@@ -9,6 +9,7 @@ class FlowExecStatus(NldStrEnum):
 
 
 class FlowStepCategory(NldStrEnum):
+    DATA_QUALITY = "DATA_QUALITY"
     FLOW_EXECUTION = "FLOW_EXECUTION"
     POST_HOOK = "POST_HOOK"
     POST_PROCESSING_FOR_STATE = "POST_PROCESSING_FOR_STATE"

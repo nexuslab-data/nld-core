@@ -4,6 +4,7 @@ from typing import Any
 from nld.connector.base.connector import SQLDataConnector
 from nld.connector.base.query import QueryExecResult
 from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
+from nld.flow.utils.lifecycle_field_resolution import resolve_upsert_field_params
 from nld.structure import Structure
 from nld.structure.field.field_characterisation_definition import (
     FieldCharacterisationDefinitionNames,
@@ -98,42 +99,11 @@ class SQLWriteStrategy(abc.ABC):
         both UPDATE SET and change detection. Fields with
         EXCLUDE_FROM_UPSERT_MATCH are updated but excluded from
         change detection.
+
+        Delegates to ``resolve_upsert_field_params`` so the SQL and seed write
+        paths share a single source of truth for the timestamp policy.
         """
-        if target_structure is None:
-            return None, None, None
-
-        exclude_from_update: list[str] = []
-        expression_overrides: dict[str, str] = {}
-        exclude_from_match: list[str] = []
-
-        insert_tst_field = target_structure.get_field_name_with_characterisation(
-            FieldCharacterisationDefinitionNames.REC_INSERT_TST,
-        )
-        if insert_tst_field is not None:
-            exclude_from_update.append(insert_tst_field)
-
-        update_tst_field = target_structure.get_field_name_with_characterisation(
-            FieldCharacterisationDefinitionNames.REC_LAST_UPDATE_TST,
-        )
-        if update_tst_field is not None:
-            expression_overrides[update_tst_field] = "CURRENT_TIMESTAMP"
-
-        for field_name in target_structure.get_field_names_with_characterisation(
-            FieldCharacterisationDefinitionNames.EXCLUDE_FROM_UPSERT_UPDATE,
-        ):
-            if field_name not in exclude_from_update:
-                exclude_from_update.append(field_name)
-
-        for field_name in target_structure.get_field_names_with_characterisation(
-            FieldCharacterisationDefinitionNames.EXCLUDE_FROM_UPSERT_MATCH,
-        ):
-            exclude_from_match.append(field_name)
-
-        return (
-            exclude_from_update or None,
-            expression_overrides or None,
-            exclude_from_match or None,
-        )
+        return resolve_upsert_field_params(target_structure)
 
 
 class OverwriteStrategy(SQLWriteStrategy):
