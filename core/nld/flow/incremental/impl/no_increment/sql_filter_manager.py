@@ -3,7 +3,7 @@ from nld.flow.incremental.base.sql_filter_manager import IncrementalSqlFilterMan
 
 
 class NoIncrementSqlFilterManager(IncrementalSqlFilterManager):
-    """No-op SQL filter for flows without incremental strategy."""
+    """No-op SQL filter for the no_increment incremental type."""
 
     def apply_filter(
         self,

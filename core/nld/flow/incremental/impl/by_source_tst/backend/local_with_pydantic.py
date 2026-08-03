@@ -9,13 +9,13 @@ from nld.flow.backend.local.backend_mixin import LocalBackendMixin
 from nld.flow.incremental.impl.by_source_tst.backend.base_with_pydantic import (
     BySourceTstStateBackendManager,
 )
+from nld.flow.incremental.impl.by_source_tst.constants import (
+    GENERAL_STATE_NAME,
+    PROCESSED_STATE_NAME,
+)
 from nld.flow.incremental.impl.by_source_tst.state import (
     BySourceTstProcessingState,
     BySourceTstState,
-)
-from nld.flow.incremental.models import (
-    GENERAL_STATE_NAME,
-    PROCESSED_STATE_NAME,
 )
 from nld.flow.incremental.models.events import (
     IncrementalBackendEngineInitialized,

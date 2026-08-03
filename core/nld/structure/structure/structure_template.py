@@ -6,7 +6,7 @@ from nld.pydantic import NldNamedBaseModel
 from nld.pydantic.namespaced_base_model_wrapper import (
     NldNamespacedBaseModelWrapper,
 )
-from nld.structure.field.field_template import FieldTemplate
+from nld.structure.field.field import FieldTemplate
 
 
 class StructureTemplate(NldNamedBaseModel):

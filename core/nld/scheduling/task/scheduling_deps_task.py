@@ -16,7 +16,7 @@ class SchedulingDependencyGraphTask(StandardTask):
     """Build and output the scheduling dependency graph for one environment.
 
     Like the flow dependency graph, but scoped to a single environment: only
-    flows active in that environment are included, nodes are annotated with
+    tasks active in that environment are included, nodes are annotated with
     their trigger kind (and cron for schedule roots), and edges are trigger
     preconditions (explicit or derived).
     """
@@ -31,7 +31,7 @@ class SchedulingDependencyGraphTask(StandardTask):
             mandatory=False,
         ),
         ExecutionParameterDefinition(
-            name="flow_name",
+            name="task_name",
             mandatory=False,
         ),
         ExecutionParameterDefinition(
@@ -59,7 +59,7 @@ class SchedulingDependencyGraphTask(StandardTask):
         self,
         downstream: bool = False,
         environment: str | None = None,
-        flow_name: str | None = None,
+        task_name: str | None = None,
         namespace: str | None = None,
         output_format: str = "json",
         override_output_folder_path: str | None = None,
@@ -68,12 +68,12 @@ class SchedulingDependencyGraphTask(StandardTask):
     ) -> None:
         super().__init__(**kwargs)
 
-        if (downstream or upstream) and not flow_name:
-            raise ValueError("--downstream and --upstream require --flow-name.")
+        if (downstream or upstream) and not task_name:
+            raise ValueError("--downstream and --upstream require --task-name.")
 
         self.downstream = downstream
         self.environment = environment
-        self.flow_name = flow_name
+        self.task_name = task_name
         self.namespace = namespace
         self.output_format = output_format
         self.override_output_folder_path = override_output_folder_path
@@ -81,7 +81,7 @@ class SchedulingDependencyGraphTask(StandardTask):
         self.execution_context.load_entities(
             entity_types=[
                 EntityTypeNames.DATA_FLOW_DEFINITION,
-                EntityTypeNames.FLOW_SCHEDULING,
+                EntityTypeNames.FLOW_TASK,
             ],
         )
 
@@ -126,8 +126,8 @@ class SchedulingDependencyGraphTask(StandardTask):
         return True
 
     def _apply_lineage_filter(self, graph: SchedulingGraph) -> SchedulingGraph:
-        """Restrict the graph to a flow's lineage when --flow-name is given."""
-        if not self.flow_name:
+        """Restrict the graph to a task's lineage when --task-name is given."""
+        if not self.task_name:
             return graph
         node_id = self._resolve_lineage_node_id(graph=graph)
         # Default (neither flag) shows the full lineage in both directions.
@@ -140,30 +140,30 @@ class SchedulingDependencyGraphTask(StandardTask):
         )
 
     def _resolve_lineage_node_id(self, graph: SchedulingGraph) -> str:
-        """Resolve the scheduling node id from --flow-name (and optional --namespace).
+        """Resolve the scheduling node id from --task-name (and optional --namespace).
 
-        When --namespace is omitted the flow is located by name across the
+        When --namespace is omitted the task is located by name across the
         resolved graph; an ambiguous name requires --namespace to disambiguate.
         """
         if self.namespace:
             node_id = build_scheduling_node_id(
                 namespace=self.namespace,
-                flow_name=self.flow_name or "",
+                task_name=self.task_name or "",
             )
             if not graph.has_node(node_id):
                 raise ValueError(
-                    f"Flow '{node_id}' is not scheduled in the resolved environment."
+                    f"Task '{node_id}' is not scheduled in the resolved environment."
                 )
             return node_id
 
-        matches = graph.find_node_ids_by_flow_name(flow_name=self.flow_name or "")
+        matches = graph.find_node_ids_by_task_name(task_name=self.task_name or "")
         if not matches:
             raise ValueError(
-                f"Flow '{self.flow_name}' is not scheduled in the resolved environment."
+                f"Task '{self.task_name}' is not scheduled in the resolved environment."
             )
         if len(matches) > 1:
             raise ValueError(
-                f"Flow '{self.flow_name}' is scheduled in several namespaces "
+                f"Task '{self.task_name}' is scheduled in several namespaces "
                 f"({', '.join(matches)}); pass --namespace to disambiguate."
             )
         return matches[0]

@@ -18,9 +18,9 @@ from nld.flow.incremental.impl.by_key.schema import (
     get_by_key_processing_state_schema,
 )
 from nld.flow.incremental.impl.by_key.state import (
-    ByKeyPlannedProcessingDetailledState,
+    ByKeyPlannedProcessingDetailedState,
     ByKeyProcessingState,
-    ByKeySingleKeyPlannedProcessingDetailledState,
+    ByKeySingleKeyPlannedProcessingDetailedState,
     ByKeySingleKeyProcessingState,
     ByKeyState,
 )
@@ -216,7 +216,7 @@ class S3ByKeyBackendStateManagerBase(
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        detailled_state: ByKeyPlannedProcessingDetailledState,
+        detailed_state: ByKeyPlannedProcessingDetailedState,
     ) -> None:
         """Persist the by_key planned detail as a sibling per-plan file.
 
@@ -225,12 +225,12 @@ class S3ByKeyBackendStateManagerBase(
         local_path = self._planned_processing_state_local_path(plan_state_uid)
         if self.file_format == "parquet":
             self._write_by_key_planned_detail_to_parquet(
-                detail=detailled_state,
+                detail=detailed_state,
                 local_path=local_path,
             )
         else:
             with open(local_path, "w") as fp:
-                fp.write(detailled_state.model_dump_json(indent=2))
+                fp.write(detailed_state.model_dump_json(indent=2))
         self.backend_connector.upload_file_from_local_path(
             local_file_path=str(local_path),
             obj_storage_path=self._planned_processing_state_remote_path(plan_state_uid),
@@ -239,7 +239,7 @@ class S3ByKeyBackendStateManagerBase(
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> ByKeyPlannedProcessingDetailledState | None:
+    ) -> ByKeyPlannedProcessingDetailedState | None:
         """Read back the by_key planned detail from its sibling file."""
         remote_path = self._planned_processing_state_remote_path(plan_state_uid)
         if not self.backend_connector.check_if_file_exists(
@@ -255,7 +255,7 @@ class S3ByKeyBackendStateManagerBase(
             return self._read_by_key_planned_detail_from_parquet(
                 local_path=local_path,
             )
-        return ByKeyPlannedProcessingDetailledState.read_json_file(local_path)
+        return ByKeyPlannedProcessingDetailedState.read_json_file(local_path)
 
     # ---- Parquet (de)serialisation for ByKeyProcessingState. ----
 
@@ -321,10 +321,10 @@ class S3ByKeyBackendStateManagerBase(
 
     @staticmethod
     def _write_by_key_planned_detail_to_parquet(
-        detail: ByKeyPlannedProcessingDetailledState,
+        detail: ByKeyPlannedProcessingDetailedState,
         local_path: Path,
     ) -> None:
-        """Write a ``ByKeyPlannedProcessingDetailledState`` as a rows-table parquet.
+        """Write a ``ByKeyPlannedProcessingDetailedState`` as a rows-table parquet.
 
         The envelope (``plan_state_uid`` / ``strategy``) is carried in PyArrow
         schema metadata so the file round-trips losslessly.
@@ -351,22 +351,22 @@ class S3ByKeyBackendStateManagerBase(
     @staticmethod
     def _read_by_key_planned_detail_from_parquet(
         local_path: Path,
-    ) -> ByKeyPlannedProcessingDetailledState:
-        """Read a ``ByKeyPlannedProcessingDetailledState`` back from parquet."""
+    ) -> ByKeyPlannedProcessingDetailedState:
+        """Read a ``ByKeyPlannedProcessingDetailedState`` back from parquet."""
         table = pq.read_table(local_path)
         metadata = table.schema.metadata or {}
         plan_state_uid = metadata.get(_ENVELOPE_METADATA_FLOW_UID, b"").decode("utf-8")
         strategy = metadata.get(_ENVELOPE_METADATA_STRATEGY, b"").decode("utf-8")
-        keys: dict[str, ByKeySingleKeyPlannedProcessingDetailledState] = {}
+        keys: dict[str, ByKeySingleKeyPlannedProcessingDetailedState] = {}
         for record in table.to_pylist():
             parameters_str = record.get("parameters")
             parameters = json.loads(parameters_str) if parameters_str else None
-            keys[record["name"]] = ByKeySingleKeyPlannedProcessingDetailledState(
+            keys[record["name"]] = ByKeySingleKeyPlannedProcessingDetailedState(
                 name=record["name"],
                 planned_processing_status=record["planned_processing_status"],
                 parameters=parameters,
             )
-        return ByKeyPlannedProcessingDetailledState(
+        return ByKeyPlannedProcessingDetailedState(
             plan_state_uid=plan_state_uid,
             strategy=strategy,
             keys=keys,

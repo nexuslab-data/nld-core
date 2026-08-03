@@ -115,7 +115,7 @@ class DataFlowInfoTask(StandardTask):
         self.log_empty_line()
 
     def _resolve_incremental_display(self) -> str:
-        """Resolve the incremental strategy name shown in the info table."""
+        """Resolve the incremental type name shown in the info table."""
         return self.data_flow_definition.resolve_incremental_logic().definition.category
 
     def _display_connectors_info(self) -> None:

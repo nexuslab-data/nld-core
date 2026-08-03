@@ -10,15 +10,15 @@ from nld.flow.backend.s3_blob_storage import S3BackendMixin
 from nld.flow.incremental.impl.by_key.backend.s3_blob_storage_base import (
     S3ByKeyBackendStateManagerBase,
 )
+from nld.flow.incremental.impl.by_key.constants import (
+    GENERAL_STATE_NAME,
+    PROCESSED_STATE_NAME,
+)
 from nld.flow.incremental.impl.by_key.schema import get_by_key_state_schema
 from nld.flow.incremental.impl.by_key.state import (
     ByKeyProcessingState,
     ByKeySingleKeyState,
     ByKeyState,
-)
-from nld.flow.incremental.models import (
-    GENERAL_STATE_NAME,
-    PROCESSED_STATE_NAME,
 )
 from nld.flow.incremental.models.events import (
     IncrementalBackendEngineInitialized,

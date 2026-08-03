@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from typing import Any
+
 import click
 
 from nld.logging import EventLevel
@@ -83,3 +86,33 @@ output_inside_project = click.option(
     default=False,
     required=False,
 )
+
+
+def override_output_folder_path(
+    file_name_hint: str = "The file name is fixed per command.",
+) -> Callable[[Any], Any]:
+    """Build the standard ``--override-output-folder-path`` option.
+
+    Every command that writes a result file exposes this flag with the same
+    spelling, type and default; only the sentence naming the produced file
+    differs, which callers supply as ``file_name_hint``. Defining it once
+    here keeps the file-output convention identical across command groups.
+
+    Args:
+        file_name_hint: Sentence appended to the help text describing which
+            file the command writes into the folder.
+
+    Returns:
+        The click option decorator to apply to a command.
+    """
+    return click.option(
+        "--override-output-folder-path",
+        "override_output_folder_path",
+        type=click.Path(file_okay=False, writable=True),
+        required=False,
+        default=None,
+        help=(
+            "Folder to write the result into, instead of a timestamped "
+            f"folder under `output/`. {file_name_hint}"
+        ),
+    )

@@ -366,6 +366,10 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         column_list: list[str],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Insert rows in batches and return one result per batch.
 
@@ -381,6 +385,10 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             rows=rows,
             conflict_merge_fields=conflict_merge_fields,
             batch_size=batch_size,
+            technical_tracking_timestamp_columns=technical_tracking_timestamp_columns,
+            exclude_from_update=exclude_from_update,
+            expression_overrides=expression_overrides,
+            exclude_from_match=exclude_from_match,
         )
 
     def execute_bulk_insert_with_result(
@@ -391,6 +399,10 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
         rows: list[tuple[Any, ...]],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Execute a bulk INSERT and return one QueryExecResult per batch.
 
@@ -405,6 +417,15 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             conflict_merge_fields: optional list of conflict
                 target columns for ON CONFLICT.
             batch_size: number of rows per batch (default 1000).
+            technical_tracking_timestamp_columns: optional mapping of column
+                name to a raw SQL expression appended to every row (e.g. the
+                technical tracking timestamps set to CURRENT_TIMESTAMP).
+            exclude_from_update: columns to omit from the ON CONFLICT
+                UPDATE SET clause.
+            expression_overrides: columns set to a custom SQL expression
+                instead of EXCLUDED.col on update.
+            exclude_from_match: columns kept in UPDATE SET but excluded from
+                the change-detection clause.
 
         Returns:
             A list of QueryExecResult, one per executed batch.
@@ -420,6 +441,10 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
                     insert_column_list=column_list,
                     rows=batch,
                     conflict_merge_fields=conflict_merge_fields,
+                    technical_tracking_timestamp_columns=technical_tracking_timestamp_columns,
+                    exclude_from_update=exclude_from_update,
+                    expression_overrides=expression_overrides,
+                    exclude_from_match=exclude_from_match,
                 )
                 start_tst = get_current_datetime()
                 cursor.execute(query)

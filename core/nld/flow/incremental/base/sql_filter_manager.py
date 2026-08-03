@@ -6,7 +6,7 @@ from nld.flow.definition.flow_definition import DataFlowStructurePredecessor
 class IncrementalSqlFilterManager(abc.ABC):
     """Abstract base for incremental SQL query filtering.
 
-    Each incremental strategy provides its own implementation
+    Each incremental type provides its own implementation
     that injects the appropriate WHERE clauses into SQL queries.
     """
 

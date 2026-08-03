@@ -585,6 +585,10 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         column_list: list[str],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Insert rows in batches and return one result per batch.
 
@@ -595,10 +599,19 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         Args:
             table_path: fully qualified table path (e.g. schema.table).
             rows: list of row tuples to insert.
-            column_list: columns to insert into.
+            column_list: columns to insert into (from the row tuples).
             conflict_merge_fields: optional conflict target columns
                 for ON CONFLICT (used for upsert semantics).
             batch_size: number of rows per batch (default 1000).
+            technical_tracking_timestamp_columns: optional mapping of column
+                name to a raw SQL expression appended to every row (e.g. the
+                technical tracking timestamps set to CURRENT_TIMESTAMP).
+            exclude_from_update: columns to omit from the ON CONFLICT
+                UPDATE SET clause.
+            expression_overrides: columns set to a custom SQL expression
+                instead of EXCLUDED.col on update.
+            exclude_from_match: columns kept in UPDATE SET but excluded from
+                the change-detection clause.
 
         Returns:
             A list of QueryExecResult, one per executed batch.

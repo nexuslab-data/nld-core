@@ -2,14 +2,13 @@ from nld.flow.definition.flow_definition import (
     NamespacedDataFlowDefinition,
 )
 from nld.scheduling.models.scheduling import (
-    NamespacedFlowSchedulingModel,
+    NamespacedFlowTaskModel,
 )
-from nld.structure.field.field import NamespacedField
+from nld.structure.field.field import NamespacedField, NamespacedFieldTemplate
 from nld.structure.field.field_adapter import NamespacedFieldAdapter
 from nld.structure.field.field_format_adapter import (
     NamespacedFieldFormatAdapter,
 )
-from nld.structure.field.field_template import NamespacedFieldTemplate
 from nld.structure.structure.structure import NamespacedStructure
 from nld.structure.structure.structure_adapter import (
     NamespacedStructureAdapter,
@@ -17,7 +16,7 @@ from nld.structure.structure.structure_adapter import (
 
 __all__ = [
     "NamespacedDataFlowDefinition",
-    "NamespacedFlowSchedulingModel",
+    "NamespacedFlowTaskModel",
     "NamespacedField",
     "NamespacedFieldAdapter",
     "NamespacedFieldFormatAdapter",

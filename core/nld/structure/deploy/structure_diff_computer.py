@@ -187,10 +187,11 @@ class StructureDiffComputer:
                 FieldDiff(
                     action=DiffAction.ADD,
                     field_name=field_name,
-                    data_type_to=normalize_comparable_data_type(
-                        data_type=added_field.data_type,
-                        capabilities=self._capabilities,
-                    ),
+                    # The declared spelling, not the comparable form:
+                    # the diff feeds rendered DDL, and normalization
+                    # is a comparison concern only (a TEXT asset must
+                    # emit ADD COLUMN ... TEXT, not VARCHAR).
+                    data_type_to=added_field.data_type,
                     default_to=(
                         str(added_field.default_value)
                         if added_field.default_value is not None
@@ -279,11 +280,14 @@ class StructureDiffComputer:
         ):
             return None
 
+        # The diff carries the declared spellings: the comparable
+        # forms decide *whether* the type changed, never what the
+        # rendered ALTER statement says.
         return FieldDiff(
             action=DiffAction.MODIFY,
             field_name=desired.name,
-            data_type_from=current_type if has_type_change else None,
-            data_type_to=desired_type if has_type_change else None,
+            data_type_from=current.data_type if has_type_change else None,
+            data_type_to=desired.data_type if has_type_change else None,
             default_from=current_default if has_default_change else None,
             default_to=desired_default if has_default_change else None,
             length_from=current.length if has_length_change else None,

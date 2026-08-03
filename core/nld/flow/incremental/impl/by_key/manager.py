@@ -14,11 +14,11 @@ from nld.flow.incremental.models import (
 from nld.flow.utils import FlowLoadingStrategies
 
 from .logic import (
-    BY_KEY_SOURCE_FULL_FLOW_INCREMENTAL_LOGIC,
-    ByKeySourceFullFlowIncrementalParams,
+    BY_KEY_FLOW_INCREMENTAL_LOGIC,
+    ByKeyFlowIncrementalParams,
 )
 from .state import (
-    ByKeyPlannedProcessingDetailledState,
+    ByKeyPlannedProcessingDetailedState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySingleKeyProcessingState,
@@ -34,21 +34,21 @@ class ByKeyStateManager(
         ByKeySourceState,
         ByKeyProcessingState,
         ByKeyPlannedProcessingState,
-        ByKeySourceFullFlowIncrementalParams,
+        ByKeyFlowIncrementalParams,
     ]
 ):
-    flow_incremental_logic = BY_KEY_SOURCE_FULL_FLOW_INCREMENTAL_LOGIC
+    flow_incremental_logic = BY_KEY_FLOW_INCREMENTAL_LOGIC
 
     def __init__(
         self,
-        incremental_parameters: ByKeySourceFullFlowIncrementalParams,
+        incremental_parameters: ByKeyFlowIncrementalParams,
         incremental_state_backend_manager: IncrementalBackendStateManager[
             DataConnector[Any],
             ByKeyState,
             ByKeySourceState,
             ByKeyProcessingState,
             ByKeyPlannedProcessingState,
-            ByKeyPlannedProcessingDetailledState,
+            ByKeyPlannedProcessingDetailedState,
         ]
         | None = None,
         secondary_incremental_state_backend_manager: IncrementalBackendStateManager[
@@ -57,7 +57,7 @@ class ByKeyStateManager(
             ByKeySourceState,
             ByKeyProcessingState,
             ByKeyPlannedProcessingState,
-            ByKeyPlannedProcessingDetailledState,
+            ByKeyPlannedProcessingDetailedState,
         ]
         | None = None,
         parameters: dict[str, Any] | None = None,
@@ -113,7 +113,7 @@ class ByKeyStateManager(
         they are the resurrection paths for PERMANENTLY_EXCLUDED entries.
         """
         assert self.source_state is not None
-        self.incremental_parameters: ByKeySourceFullFlowIncrementalParams
+        self.incremental_parameters: ByKeyFlowIncrementalParams
         if self.strategy in [FlowLoadingStrategies.DELTA]:
             assert self.latest_incremental_state is not None
             terminal_keys = self.latest_incremental_state.get_terminal_keys()
@@ -290,10 +290,15 @@ class ByKeyStateManager(
             self._update_post_processing_from_processing_state_for_single_key(key_name)
 
     def create_post_processing_state(self) -> ByKeyState:
-        # --- Step 1 / Initialize post-processing state with existing state
-        self.post_processing_state = ByKeyState.deep_copy(
-            cast(ByKeyState, self.latest_incremental_state)
-        )
+        # --- Step 1 / Reuse the latest incremental state as the post-processing
+        # state, updating it in place. The key state accumulates one entry per
+        # key ever seen and can hold hundreds of thousands of entries; deep
+        # copying it here doubled the in-memory footprint at the most
+        # memory-intensive point of the run and could OOM the worker. No
+        # consumer reads ``latest_incremental_state`` after this point, so
+        # mutating it in place is safe and keeps peak memory O(existing keys)
+        # instead of O(2 * existing keys).
+        self.post_processing_state = cast(ByKeyState, self.latest_incremental_state)
         # --- Step 2 / Update the post-processing state with the processing state
         if self.strategy in [
             FlowLoadingStrategies.FULL,
@@ -307,11 +312,11 @@ class ByKeyStateManager(
 
     def create_partial_post_processing_state(self, identifier: Any) -> None:
         """Create or update the post-processing state for a single key."""
-        # --- Step 1 / Lazily initialize post-processing state
+        # --- Step 1 / Lazily bind the post-processing state to the latest
+        # incremental state, updating it in place (see ``create_post_processing_state``
+        # for why this is not deep copied).
         if self.post_processing_state is None:
-            self.post_processing_state = ByKeyState.deep_copy(
-                cast(ByKeyState, self.latest_incremental_state)
-            )
+            self.post_processing_state = cast(ByKeyState, self.latest_incremental_state)
 
         # --- Step 2 / Update the post-processing state for this key
         self._update_post_processing_from_processing_state_for_single_key(identifier)

@@ -122,18 +122,28 @@ class SelectRendering(SQLRenderingTransformation):
         fields are included in the returned mapping. Unmatched fields
         are handled separately as NULL expressions.
 
+        Fields directly based on a field template with a lineage are
+        excluded so the lineage rule wins over the name-based match,
+        matching the behavior of structure-template fields (which are
+        never auto-mapped).
+
         Raises ValueError when no target field matches any source field.
         """
         all_source_fields: set[str] = set()
         for structure in source_structures.values():
             all_source_fields.update(structure.get_field_names())
 
+        direct_lineage_fields = set(
+            target_structure.get_direct_field_template_lineages().keys()
+        )
         mapping: dict[str, FieldLineage] = {}
         for field_name in target_structure.get_field_names():
+            if field_name in direct_lineage_fields:
+                continue
             if field_name in all_source_fields:
                 mapping[field_name] = FieldLineage(origin=field_name)
 
-        if not mapping:
+        if not mapping and not direct_lineage_fields:
             raise ValueError(
                 "No target field could be auto-mapped to any source "
                 "field. Target fields: "

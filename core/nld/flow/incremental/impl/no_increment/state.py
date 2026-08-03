@@ -1,7 +1,7 @@
 import datetime
 
 from nld.flow.incremental.models import (
-    FlowPlannedProcessingDetailledState,
+    FlowPlannedProcessingDetailedState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
@@ -59,8 +59,8 @@ class NoIncrementProcessingState(FlowProcessingState):
         return "\n".join(format_key_value_lines(pairs=pairs))
 
 
-class NoIncrementPlannedProcessingDetailledState(
-    FlowPlannedProcessingDetailledState[NoIncrementProcessingState],
+class NoIncrementPlannedProcessingDetailedState(
+    FlowPlannedProcessingDetailedState[NoIncrementProcessingState],
 ):
     """Plan-time detail for a no_increment PLANNED plan."""
 
@@ -77,7 +77,7 @@ class NoIncrementPlannedProcessingDetailledState(
         cls,
         plan_state_uid: str,
         processing_state: NoIncrementProcessingState,
-    ) -> "NoIncrementPlannedProcessingDetailledState":
+    ) -> "NoIncrementPlannedProcessingDetailedState":
         return cls(
             plan_state_uid=plan_state_uid,
             strategy=processing_state.strategy,
@@ -85,6 +85,6 @@ class NoIncrementPlannedProcessingDetailledState(
 
 
 class NoIncrementPlannedProcessingState(
-    FlowPlannedProcessingState[NoIncrementPlannedProcessingDetailledState],
+    FlowPlannedProcessingState[NoIncrementPlannedProcessingDetailedState],
 ):
     """A PLANNED plan carrying a no_increment planned-detail payload."""

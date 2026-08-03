@@ -2,46 +2,50 @@ from typing import Any
 
 import networkx as nx
 
+from nld.scheduling.models import ExecutionFrequency
+
 TRIGGER_KIND_ATTRIBUTE = "trigger_kind"
 CRON_ATTRIBUTE = "cron"
 NAMESPACE_ATTRIBUTE = "namespace"
-FLOW_NAME_ATTRIBUTE = "flow_name"
+TASK_NAME_ATTRIBUTE = "task_name"
 PARAMS_ATTRIBUTE = "params"
 EXTERNAL_ATTRIBUTE = "external"
+FREQUENCY_ATTRIBUTE = "frequency"
 
 EXTERNAL_TRIGGER_KIND = "external"
 
 
-def build_scheduling_node_id(namespace: str, flow_name: str) -> str:
-    """Build a scheduling node id from a namespace and a flow name."""
+def build_scheduling_node_id(namespace: str, task_name: str) -> str:
+    """Build a scheduling node id from a namespace and a task name."""
     if not namespace or namespace == ".":
-        return flow_name
-    return f"{namespace}.{flow_name}"
+        return task_name
+    return f"{namespace}.{task_name}"
 
 
 class SchedulingGraph:
-    """Directed graph of an environment's scheduled flows.
+    """Directed graph of an environment's scheduled tasks.
 
-    Nodes are flows active in a single environment. Each node carries its
-    trigger kind (``schedule`` or ``flow``) and, for schedule triggers, its
-    cron. Edges link an upstream flow to a downstream flow that is triggered by
-    it (``upstream -> downstream``).
+    Nodes are FlowTask entities active in a single environment. Each node
+    carries its trigger kind (``schedule`` or ``flow``), its declared execution
+    frequency and, for schedule triggers, its cron. Edges link an upstream task
+    to a downstream task that is triggered by it (``upstream -> downstream``).
     """
 
     def __init__(self) -> None:
         self._digraph = nx.DiGraph()
 
-    def add_flow(
+    def add_task(
         self,
         node_id: str,
         namespace: str,
-        flow_name: str,
+        task_name: str,
         trigger_kind: str,
         cron: str | None = None,
         params: dict[str, Any] | None = None,
         external: bool = False,
+        frequency: ExecutionFrequency | None = None,
     ) -> str:
-        """Add a scheduled flow node and return its id.
+        """Add a scheduled task node and return its id.
 
         ``external`` marks a node that lives in another data product (an
         upstream source referenced by a cross-product predecessor).
@@ -50,21 +54,22 @@ class SchedulingGraph:
             node_id,
             **{
                 NAMESPACE_ATTRIBUTE: namespace,
-                FLOW_NAME_ATTRIBUTE: flow_name,
+                TASK_NAME_ATTRIBUTE: task_name,
                 TRIGGER_KIND_ATTRIBUTE: trigger_kind,
                 CRON_ATTRIBUTE: cron,
                 PARAMS_ATTRIBUTE: params or {},
                 EXTERNAL_ATTRIBUTE: external,
+                FREQUENCY_ATTRIBUTE: frequency,
             },
         )
         return node_id
 
-    def add_external_source(self, node_id: str, namespace: str, flow_name: str) -> str:
+    def add_external_source(self, node_id: str, namespace: str, task_name: str) -> str:
         """Add (idempotently) an external upstream source node."""
-        return self.add_flow(
+        return self.add_task(
             node_id=node_id,
             namespace=namespace,
-            flow_name=flow_name,
+            task_name=task_name,
             trigger_kind=EXTERNAL_TRIGGER_KIND,
             external=True,
         )
@@ -75,7 +80,7 @@ class SchedulingGraph:
         downstream_node_id: str,
         external: bool = False,
     ) -> None:
-        """Add a trigger edge from an upstream flow to a downstream flow.
+        """Add a trigger edge from an upstream task to a downstream task.
 
         ``external`` marks an edge whose upstream is in another data product.
         """
@@ -94,35 +99,61 @@ class SchedulingGraph:
         """Whether a node id exists in the graph."""
         return node_id in self._digraph
 
-    def has_flow(self, namespace: str, flow_name: str) -> bool:
-        """Whether a flow is part of this environment's scheduling graph."""
+    def has_task(self, namespace: str, task_name: str) -> bool:
+        """Whether a task is part of this environment's scheduling graph."""
         node_id = build_scheduling_node_id(
             namespace=namespace,
-            flow_name=flow_name,
+            task_name=task_name,
         )
         return node_id in self._digraph
 
-    def find_node_ids_by_flow_name(self, flow_name: str) -> list[str]:
-        """Return the ids of local (non-external) nodes with this flow name.
+    def find_node_ids_by_task_name(self, task_name: str) -> list[str]:
+        """Return the ids of local (non-external) nodes with this task name.
 
-        Lets callers filter by ``--flow-name`` without knowing the namespace.
+        Lets callers filter by ``--task-name`` without knowing the namespace.
         """
         return sorted(
             node_id
             for node_id in self._digraph.nodes
-            if self._digraph.nodes[node_id][FLOW_NAME_ATTRIBUTE] == flow_name
+            if self._digraph.nodes[node_id][TASK_NAME_ATTRIBUTE] == task_name
             and not self._digraph.nodes[node_id][EXTERNAL_ATTRIBUTE]
         )
 
-    def is_schedule_root(self, namespace: str, flow_name: str) -> bool:
-        """Whether a flow is present and schedule-triggered (a DAG root)."""
+    def is_schedule_root(self, namespace: str, task_name: str) -> bool:
+        """Whether a task is present and schedule-triggered (a DAG root)."""
         node_id = build_scheduling_node_id(
             namespace=namespace,
-            flow_name=flow_name,
+            task_name=task_name,
         )
         if node_id not in self._digraph:
             return False
         return bool(self._digraph.nodes[node_id][TRIGGER_KIND_ATTRIBUTE] == "schedule")
+
+    def get_node_attributes(self, node_id: str) -> dict[str, Any]:
+        """Return a copy of a node's attributes."""
+        if node_id not in self._digraph:
+            raise KeyError(f"Node '{node_id}' not found in the scheduling graph")
+        return dict(self._digraph.nodes[node_id])
+
+    def get_frequency(self, node_id: str) -> ExecutionFrequency | None:
+        """Return the declared execution frequency of a node, if any."""
+        attributes = self.get_node_attributes(node_id=node_id)
+        frequency: ExecutionFrequency | None = attributes[FREQUENCY_ATTRIBUTE]
+        return frequency
+
+    def local_node_ids(self) -> list[str]:
+        """Return the sorted ids of the nodes owned by this data product."""
+        return sorted(
+            node_id
+            for node_id in self._digraph.nodes
+            if not self._digraph.nodes[node_id][EXTERNAL_ATTRIBUTE]
+        )
+
+    def upstream_node_ids(self, node_id: str) -> list[str]:
+        """Return the sorted ids of the nodes directly triggering a node."""
+        if node_id not in self._digraph:
+            raise KeyError(f"Node '{node_id}' not found in the scheduling graph")
+        return sorted(self._digraph.predecessors(node_id))  # type: ignore[no-untyped-call]
 
     def find_cycle(self) -> list[str] | None:
         """Return the node ids forming a cycle, or None when the graph is acyclic."""
@@ -161,9 +192,10 @@ class SchedulingGraph:
                 {
                     "id": node_id,
                     "namespace": data[NAMESPACE_ATTRIBUTE],
-                    "flow_name": data[FLOW_NAME_ATTRIBUTE],
+                    "task_name": data[TASK_NAME_ATTRIBUTE],
                     "trigger_kind": data[TRIGGER_KIND_ATTRIBUTE],
                     "cron": data[CRON_ATTRIBUTE],
+                    "frequency": self._serialize_frequency(data[FREQUENCY_ATTRIBUTE]),
                     "params": data[PARAMS_ATTRIBUTE],
                     "external": data[EXTERNAL_ATTRIBUTE],
                 }
@@ -198,9 +230,12 @@ class SchedulingGraph:
             data = self._digraph.nodes[node_id]
             kind = data[TRIGGER_KIND_ATTRIBUTE]
             cron = data[CRON_ATTRIBUTE]
+            frequency = data[FREQUENCY_ATTRIBUTE]
             label = f"{node_id}<br/>{kind}"
             if cron:
                 label = f"{label}<br/>{cron}"
+            if frequency:
+                label = f"{label}<br/>{frequency}"
             mermaid_id = self._mermaid_id(node_id)
             lines.append(f'    {mermaid_id}["{label}"]')
             if data[EXTERNAL_ATTRIBUTE]:
@@ -221,3 +256,8 @@ class SchedulingGraph:
     def _mermaid_id(node_id: str) -> str:
         """Build a Mermaid-safe node identifier."""
         return node_id.replace(".", "_").replace("-", "_")
+
+    @staticmethod
+    def _serialize_frequency(frequency: ExecutionFrequency | None) -> str | None:
+        """Serialize a frequency to its plain string value."""
+        return str(frequency) if frequency is not None else None

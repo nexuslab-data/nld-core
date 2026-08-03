@@ -32,6 +32,21 @@ class FlowException(NldRuntimeException):
         super().__init__(self.message)
 
 
+class DataQualityBlockingViolationException(NldRuntimeException):
+    CODE = 42004
+    MESSAGE = "Data Quality Blocking Violation Exception"
+
+    def __init__(
+        self,
+        violation_messages: list[str],
+    ) -> None:
+        details = " | ".join(violation_messages)
+        self.message = (
+            f"{len(violation_messages)} blocking data quality violation(s): {details}"
+        )
+        super().__init__(self.message)
+
+
 class NoPlannedStateException(NldRuntimeException):
     CODE = 42002
     MESSAGE = "No Planned State Exception"
@@ -43,7 +58,7 @@ class NoPlannedStateException(NldRuntimeException):
     ) -> None:
         self.message = (
             f"No planned state available for flow "
-            f"{flow_namespace}/{flow_name} but the '--planned-state-strategy "
+            f"{flow_namespace}/{flow_name} but the '--planned-state-policy "
             f"strict' option requires one."
         )
         super().__init__(self.message)
@@ -59,7 +74,7 @@ class StalePlannedStateException(NldRuntimeException):
     ) -> None:
         self.message = (
             f"Planned state {plan_state_uid} is stale relative to the latest "
-            f"incremental state and the '--planned-state-strategy strict' "
+            f"incremental state and the '--planned-state-policy strict' "
             f"option forbids recomputing it."
         )
         super().__init__(self.message)

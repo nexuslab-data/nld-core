@@ -201,8 +201,9 @@ class StructureInfoTask(StandardTask):
     def _get_template_field_map(self) -> dict[str, str]:
         """Build a mapping of field name to template name.
 
-        Fields defined directly on the structure get an
-        empty string.
+        Structure-template fields show the structure template name and
+        fields directly based on a field template show the field template
+        name. Fields declared without any template get an empty string.
         """
         field_map: dict[str, str] = {}
         for template in self.structure.templates:
@@ -210,8 +211,10 @@ class StructureInfoTask(StandardTask):
                 field_instance = field_template.get_field_instance()
                 if field_instance.name not in field_map:
                     field_map[field_instance.name] = template.name
-        for field_name in self.structure.fields:
-            field_map[field_name] = ""
+        for field_name, field in self.structure.fields.items():
+            field_map[field_name] = (
+                field.field_template.name if field.field_template is not None else ""
+            )
         return field_map
 
     def _get_template_property_keys(self) -> dict[str, str]:

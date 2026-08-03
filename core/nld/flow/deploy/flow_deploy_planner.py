@@ -285,15 +285,12 @@ class FlowDeployPlanner(StandardTask):
             )
             for fid in scoped_flow_id_set
         }
-        for key, metadata_row in previously_deployed.items():
-            if key not in current_keys:
-                entries.append(
-                    FlowChangeEntry(
-                        flow_name=metadata_row.flow_name,
-                        namespace=metadata_row.namespace,
-                        action=FlowDeployAction.REMOVED,
-                    )
-                )
+        entries.extend(
+            self._build_removed_entries(
+                previously_deployed=previously_deployed,
+                current_keys=current_keys,
+            )
+        )
 
         scope = DeployScope(
             downstream=self._downstream,
@@ -332,6 +329,39 @@ class FlowDeployPlanner(StandardTask):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _can_detect_removals(self) -> bool:
+        """Whether the resolved scope can prove that a flow was removed.
+
+        Only a full-extent scope can prove removal: with ``--name`` or
+        a lineage scope the plan sees a subset of the project, so a
+        deployed flow absent from the scope is not necessarily removed
+        from the assets. The namespace filter alone is safe because the
+        previously-deployed set is filtered by the same subtree rule.
+        """
+        return self._name is None and not self._upstream and not self._downstream
+
+    def _build_removed_entries(
+        self,
+        previously_deployed: dict[str, FlowDeployMetadataRow],
+        current_keys: set[str],
+    ) -> list[FlowChangeEntry]:
+        """Build REMOVED entries for deployed flows absent from the assets."""
+        if not self._can_detect_removals():
+            self.log_info(
+                "Scoped deploy (--name/--upstream/--downstream) — "
+                "removal detection skipped",
+            )
+            return []
+        return [
+            FlowChangeEntry(
+                flow_name=metadata_row.flow_name,
+                namespace=metadata_row.namespace,
+                action=FlowDeployAction.REMOVED,
+            )
+            for key, metadata_row in previously_deployed.items()
+            if key not in current_keys
+        ]
 
     def _resolve_scoped_flow_ids(
         self,

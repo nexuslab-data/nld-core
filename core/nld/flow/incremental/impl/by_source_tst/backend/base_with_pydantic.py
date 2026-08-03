@@ -6,7 +6,7 @@ from nld.flow.incremental.base.manager import (
     IncrementalBackendStateManager,
 )
 from nld.flow.incremental.impl.by_source_tst.state import (
-    BySourceTstPlannedProcessingDetailledState,
+    BySourceTstPlannedProcessingDetailedState,
     BySourceTstPlannedProcessingState,
     BySourceTstProcessingState,
     BySourceTstSourceState,
@@ -21,7 +21,7 @@ class BySourceTstStateBackendManager[DATA_CONNECTOR: DataConnector[Any]](
         BySourceTstSourceState,
         BySourceTstProcessingState,
         BySourceTstPlannedProcessingState,
-        BySourceTstPlannedProcessingDetailledState,
+        BySourceTstPlannedProcessingDetailedState,
     ],
     abc.ABC,
 ):

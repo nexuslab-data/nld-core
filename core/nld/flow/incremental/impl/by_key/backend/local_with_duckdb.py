@@ -9,14 +9,16 @@ from nld.flow.backend.local import LocalBackendMixin
 from nld.flow.incremental.impl.by_key.backend.base_with_pydantic import (
     ByKeyStateBackendManager,
 )
+from nld.flow.incremental.impl.by_key.constants import (
+    GENERAL_STATE_NAME,
+    PROCESSED_STATE_NAME,
+)
 from nld.flow.incremental.impl.by_key.state import (
     ByKeyProcessingState,
     ByKeySingleKeyState,
     ByKeyState,
 )
 from nld.flow.incremental.models import (
-    GENERAL_STATE_NAME,
-    PROCESSED_STATE_NAME,
     IncrementalStateStatus,
 )
 from nld.flow.incremental.models.events import (

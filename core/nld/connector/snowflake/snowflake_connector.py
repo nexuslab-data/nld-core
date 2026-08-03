@@ -561,12 +561,29 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         column_list: list[str],
         conflict_merge_fields: list[str] | None = None,
         batch_size: int = 1000,
+        technical_tracking_timestamp_columns: dict[str, str] | None = None,
+        exclude_from_update: list[str] | None = None,
+        expression_overrides: dict[str, str] | None = None,
+        exclude_from_match: list[str] | None = None,
     ) -> list[QueryExecResult]:
         """Insert rows in batches using multi-row INSERT statements.
 
         When conflict_merge_fields is provided, uses MERGE INTO for
         upsert semantics instead of plain INSERT.
         """
+        if any(
+            (
+                technical_tracking_timestamp_columns,
+                exclude_from_update,
+                expression_overrides,
+                exclude_from_match,
+            )
+        ):
+            raise NotImplementedError(
+                "Snowflake bulk_insert_into does not yet support technical "
+                "tracking timestamp injection or the ON CONFLICT upsert "
+                "parameters; these are implemented for PostgreSQL and DuckDB."
+            )
         table_path = self.clean_object_path(table_path)
         cols = ", ".join(column_list)
         results: list[QueryExecResult] = []

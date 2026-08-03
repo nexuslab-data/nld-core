@@ -6,6 +6,10 @@ from nld.connector.base.connector import SQLDataConnector
 from nld.connector.base.query import QueryExecResult
 from nld.flow.seed.seed_file_resolver import load_seed_file_content
 from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
+from nld.flow.utils.lifecycle_field_resolution import (
+    resolve_technical_tracking_timestamp_expressions,
+    resolve_upsert_field_params,
+)
 from nld.structure import Structure
 
 
@@ -120,6 +124,36 @@ class SeedWriteStrategy(abc.ABC):
                 "target_structure must have a primary key defined for UPSERT strategy"
             )
         return [field.name for field in target_structure.get_primary_key_fields()]
+
+    def _get_technical_tracking_timestamp_columns(
+        self,
+        column_list: list[str],
+        target_structure: Structure,
+    ) -> dict[str, str]:
+        """Resolve the technical tracking timestamp columns to inject on insert.
+
+        The standard tracking template contributes ``ts_inserted_at``
+        (``rec_insert_tst``) and ``ts_updated_at`` (``rec_last_update_tst``),
+        which are absent from the seed CSV and carry no database default. They
+        are injected as ``CURRENT_TIMESTAMP`` so seeded rows track their own
+        insert/update time, mirroring the SQL flow path.
+        """
+        return resolve_technical_tracking_timestamp_expressions(
+            target_structure,
+            column_list,
+        )
+
+    def _get_upsert_field_params(
+        self,
+        target_structure: Structure,
+    ) -> tuple[list[str] | None, dict[str, str] | None, list[str] | None]:
+        """Resolve ``(exclude_from_update, expression_overrides,
+        exclude_from_match)`` for an UPSERT from the field characterisations.
+
+        Shares its logic with the SQL write strategies so a seed UPSERT keeps
+        ``ts_inserted_at`` on update and refreshes ``ts_updated_at``.
+        """
+        return resolve_upsert_field_params(target_structure)
 
 
 _VALID_SEED_STRATEGY_NAMES = [

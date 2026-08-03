@@ -75,8 +75,10 @@ class FlowStateManager[
             return False
         return self.incremental_state_manager.post_processing_state is not None
 
-    def update_execution_status_to_completed(self) -> None:
-        self.execution_state_manager.update_execution_status_to_completed()
+    def update_execution_status_to_completed(self, with_warning: bool = False) -> None:
+        self.execution_state_manager.update_execution_status_to_completed(
+            with_warning=with_warning,
+        )
         if self._should_auto_transition_processing_state():
             self.processing_state.set_to_succeeded()  # type: ignore[union-attr]
 
@@ -108,8 +110,10 @@ class FlowStateManager[
             step_info=step_info,
         )
 
-    def save_all_execution_infos(self) -> None:
-        self.execution_state_manager.save_all_execution_infos()
+    def save_all_execution_infos(self, without_state: bool = False) -> None:
+        self.execution_state_manager.save_all_execution_infos(
+            without_state=without_state,
+        )
 
     # Incremental methods
     @property

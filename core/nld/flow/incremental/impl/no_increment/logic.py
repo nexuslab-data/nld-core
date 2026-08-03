@@ -1,7 +1,7 @@
 from typing import ClassVar
 
 from nld.flow.incremental.impl.no_increment.state import (
-    NoIncrementPlannedProcessingDetailledState,
+    NoIncrementPlannedProcessingDetailedState,
     NoIncrementPlannedProcessingState,
     NoIncrementProcessingState,
     NoIncrementSourceState,
@@ -26,7 +26,7 @@ NO_INCREMENT_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     source_state_class=NoIncrementSourceState,
     processing_state_class=NoIncrementProcessingState,
     planned_processing_state_class=NoIncrementPlannedProcessingState,
-    planned_processing_detailled_state_class=NoIncrementPlannedProcessingDetailledState,
+    planned_processing_detailed_state_class=NoIncrementPlannedProcessingDetailedState,
     auto_processing_state_transition=True,
     partial_state_persistence=False,
     tracks_logical_deletion=False,
@@ -53,7 +53,7 @@ class NoIncrementFlowIncrementalParams(FlowIncrementalParams):
         return (
             False,
             f"Strategy '{self.strategy}' is not supported for "
-            f"'no_increment' incremental mode. "
+            f"'no_increment' incremental type. "
             f"Supported strategy: FULL.",
         )
 

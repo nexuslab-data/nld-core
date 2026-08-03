@@ -5,7 +5,7 @@ from pydantic import Field, model_validator
 from nld.pydantic import NldBaseModel, NldEntityReference
 
 if TYPE_CHECKING:
-    from nld.scheduling.models.scheduling import FlowScheduling
+    from nld.scheduling.models.scheduling import FlowTask
 
 SchedulingExecutionState = Literal[
     "SUCCESS",
@@ -19,14 +19,14 @@ _DEFAULT_PRECONDITION_STATES: list[SchedulingExecutionState] = ["SUCCESS", "WARN
 
 
 class FlowPrecondition(NldBaseModel):
-    """An upstream scheduling that must reach a terminal state before this runs.
+    """An upstream task that must reach a terminal state before this runs.
 
-    ``name`` references another FlowScheduling entity (the scheduled task), so
-    scheduling depends on scheduling.
+    ``name`` references another FlowTask entity — a task's trigger can depend
+    on another task's outcome.
 
     When ``external`` is False (the default) the reference is resolved against
     the local registry and a dangling predecessor is a load-time error. When
-    ``external`` is True the upstream scheduling lives in another data product;
+    ``external`` is True the upstream task lives in another data product;
     the reference is informational only and is neither resolved nor validated
     locally (a single data product cannot see another product's registry).
 
@@ -37,7 +37,7 @@ class FlowPrecondition(NldBaseModel):
     resolve ``nld_project`` to whatever namespace their platform uses.
     """
 
-    name: "NldEntityReference[FlowScheduling]"
+    name: "NldEntityReference[FlowTask]"
     external: bool = False
     nld_project: str | None = None
     states: list[SchedulingExecutionState] = Field(
@@ -62,14 +62,43 @@ class ScheduleTrigger(NldBaseModel):
 
 
 class FlowTrigger(NldBaseModel):
-    """Event-based trigger: runs after upstream schedulings complete.
+    """Event-based trigger: runs after upstream tasks complete.
 
-    When ``predecessors`` is empty, the resolver derives them from the flow
-    dependency graph. An explicit list overrides the derivation.
+    ``predecessors`` fully overrides the automatic lineage: when it is
+    non-empty, the flow dependency graph is never consulted, and the
+    upstream set is exactly ``get_all_predecessors()`` (``predecessors`` +
+    ``additional_predecessors``, net of ``excluded_predecessors``). Use it
+    when a task's upstream set should not track the flow's own
+    dependencies.
+
+    When ``predecessors`` is empty, the resolver derives the automatic
+    lineage from the flow dependency graph and adds ``get_all_predecessors()``
+    (``additional_predecessors``, net of ``excluded_predecessors``) on top of
+    it — the additive/subtractive mode.
     """
 
     kind: Literal["flow"]
     predecessors: list[FlowPrecondition] = Field(default_factory=list)
+    additional_predecessors: list[FlowPrecondition] = Field(default_factory=list)
+    excluded_predecessors: list[FlowPrecondition] = Field(default_factory=list)
+
+    def get_all_predecessors(self) -> list[FlowPrecondition]:
+        """Return ``predecessors``/``additional_predecessors``, net of exclusions.
+
+        Combines ``predecessors`` and ``additional_predecessors``, then drops
+        any entry that also appears in ``excluded_predecessors`` (matched on
+        ``name``, ``external``, and ``nld_project``).
+        """
+        excluded_keys = {
+            (excluded.name, excluded.external, excluded.nld_project)
+            for excluded in self.excluded_predecessors
+        }
+        return [
+            predecessor
+            for predecessor in [*self.predecessors, *self.additional_predecessors]
+            if (predecessor.name, predecessor.external, predecessor.nld_project)
+            not in excluded_keys
+        ]
 
 
 Trigger = Annotated[

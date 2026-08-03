@@ -13,9 +13,11 @@ from nld.flow.incremental.impl.by_key import (
 from nld.flow.incremental.impl.by_key.backend.s3_blob_storage_base import (
     S3ByKeyBackendStateManagerBase,
 )
-from nld.flow.incremental.models import (
+from nld.flow.incremental.impl.by_key.constants import (
     GENERAL_STATE_NAME,
     PROCESSED_STATE_NAME,
+)
+from nld.flow.incremental.models import (
     IncrementalStateStatus,
 )
 from nld.flow.incremental.models.events import (

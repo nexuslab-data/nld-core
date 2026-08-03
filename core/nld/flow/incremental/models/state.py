@@ -45,7 +45,7 @@ class FlowProcessingState(NldBaseModel):
     ) -> tuple[datetime.datetime | None, datetime.datetime | None]:
         """Return (pull_from, pull_to) timestamps if applicable.
 
-        Subclasses with timestamp-based incremental strategies
+        Subclasses with timestamp-based incremental types
         should override this to return their actual timestamps.
         """
         return None, None
@@ -55,7 +55,7 @@ class FlowSourceState(NldBaseModel):
     pass
 
 
-class PlannedStateStrategy:
+class PlannedStatePolicy:
     """How ``nld flow execute`` reacts to an available planned state.
 
     AUTO (the default) adopts a planned state only when it is still consistent
@@ -70,11 +70,11 @@ class PlannedStateStrategy:
     STRICT = "strict"
 
 
-PLANNED_STATE_STRATEGIES = [
-    PlannedStateStrategy.AUTO,
-    PlannedStateStrategy.RECOMPUTE,
-    PlannedStateStrategy.STRICT,
-    PlannedStateStrategy.TRUST,
+PLANNED_STATE_POLICIES = [
+    PlannedStatePolicy.AUTO,
+    PlannedStatePolicy.RECOMPUTE,
+    PlannedStatePolicy.STRICT,
+    PlannedStatePolicy.TRUST,
 ]
 
 
@@ -100,7 +100,7 @@ class FlowStatePlan(NldBaseModel):
     executed_by_flow_uid: str | None = None
 
 
-class FlowPlannedProcessingDetailledState[ProcessingState: FlowProcessingState](
+class FlowPlannedProcessingDetailedState[ProcessingState: FlowProcessingState](
     NldBaseModel,
 ):
     """Strategy-specific detail a PLANNED plan carries.
@@ -129,7 +129,7 @@ class FlowPlannedProcessingDetailledState[ProcessingState: FlowProcessingState](
         cls,
         plan_state_uid: str,
         processing_state: ProcessingState,
-    ) -> "FlowPlannedProcessingDetailledState[ProcessingState]":
+    ) -> "FlowPlannedProcessingDetailedState[ProcessingState]":
         """Build the plan-time detail from a freshly computed processing state."""
         raise NotImplementedError(
             "The method 'from_processing_state' should be implemented in sub class."
@@ -137,19 +137,19 @@ class FlowPlannedProcessingDetailledState[ProcessingState: FlowProcessingState](
 
 
 class FlowPlannedProcessingState[
-    DetailledState: FlowPlannedProcessingDetailledState[Any]
+    DetailedState: FlowPlannedProcessingDetailedState[Any]
 ](
     FlowStatePlan,
 ):
     """A state plan plus its strategy-specific planned detail payload.
 
-    The strategy-specific payload is carried under ``detailled_state`` so a
+    The strategy-specific payload is carried under ``detailed_state`` so a
     single plan schema covers every strategy. The payload is a
-    ``FlowPlannedProcessingDetailledState`` (plan-time only), decoupled from the
+    ``FlowPlannedProcessingDetailedState`` (plan-time only), decoupled from the
     live processing state.
     """
 
-    detailled_state: DetailledState
+    detailed_state: DetailedState
 
     def to_state_plan(self) -> FlowStatePlan:
         """Return the lifecycle metadata without the planned-detail payload."""

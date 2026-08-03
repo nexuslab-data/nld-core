@@ -6,7 +6,7 @@ from nld.flow.incremental.base.manager import (
     IncrementalBackendStateManager,
 )
 from nld.flow.incremental.impl.by_key.state import (
-    ByKeyPlannedProcessingDetailledState,
+    ByKeyPlannedProcessingDetailedState,
     ByKeyPlannedProcessingState,
     ByKeyProcessingState,
     ByKeySourceState,
@@ -21,7 +21,7 @@ class ByKeyStateBackendManager[DATA_CONNECTOR: DataConnector[Any]](
         ByKeySourceState,
         ByKeyProcessingState,
         ByKeyPlannedProcessingState,
-        ByKeyPlannedProcessingDetailledState,
+        ByKeyPlannedProcessingDetailedState,
     ],
     abc.ABC,
 ):

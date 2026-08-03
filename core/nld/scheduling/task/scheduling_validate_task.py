@@ -32,7 +32,7 @@ class SchedulingValidateTask(StandardTask):
         self.execution_context.load_entities(
             entity_types=[
                 EntityTypeNames.DATA_FLOW_DEFINITION,
-                EntityTypeNames.FLOW_SCHEDULING,
+                EntityTypeNames.FLOW_TASK,
             ],
         )
 
@@ -48,6 +48,6 @@ class SchedulingValidateTask(StandardTask):
 
         self.log_info(
             f"Scheduling for environment '{environment}' is valid: "
-            f"{len(graph.node_ids)} scheduled flow(s), no cycles."
+            f"{len(graph.node_ids)} scheduled task(s), no cycles."
         )
         return True

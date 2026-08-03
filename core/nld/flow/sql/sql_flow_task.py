@@ -6,6 +6,7 @@ from nld.flow.incremental.impl.no_increment.logic import (
     NO_INCREMENT_FLOW_INCREMENTAL_LOGIC,
 )
 from nld.flow.incremental.models import FlowIncrementalLogic
+from nld.flow.quality import DataQualityContext
 from nld.flow.sql.sql_file_resolver import (
     load_sql_file_content,
     try_resolve_sql_file_path,
@@ -141,6 +142,13 @@ class SQLFlowTask(DataFlowTask):
                 step_category=FlowStepCategory.POST_HOOK,
                 template_variables=variables,
             )
+
+    def get_data_quality_context(self) -> DataQualityContext | None:
+        """Build the quality context from the resolved SQL target."""
+        return self._build_sql_target_data_quality_context(
+            connector=self.target_connector,
+            target_schema=self.target_schema,
+        )
 
     def _assert_strategy_incremental_compatible(
         self,

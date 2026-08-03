@@ -1,8 +1,7 @@
 import abc
 
 from nld.flow.definition.field_lineage import FieldLineage
-from nld.structure import Structure
-from nld.structure.field.field_template import FieldTemplateLineage
+from nld.structure import FieldTemplateLineage, Structure
 
 
 def resolve_template_field_expressions(
@@ -12,14 +11,28 @@ def resolve_template_field_expressions(
 ) -> list[str]:
     """Resolve template fields with lineage into SQL expressions.
 
-    Iterates over all templates and their field templates. For each
-    field template with a lineage that is not already in the explicit
-    mapping, generates the appropriate SQL expression. When the target
-    structure has a structure_type, lineage overrides for that type
-    take precedence over the default rule.
+    Iterates over directly-referenced field templates first, then all
+    structure templates and their field templates. For each lineage that
+    is not already in the explicit mapping, generates the appropriate
+    SQL expression. When the target structure has a structure_type,
+    lineage overrides for that type take precedence over the default
+    rule. Direct references run first because declared fields take
+    precedence over template-contributed fields on name collisions.
     """
     target_type = target_structure.structure_type
     expressions: list[str] = []
+    direct_lineages = target_structure.get_direct_field_template_lineages()
+    for field_name, direct_lineage in direct_lineages.items():
+        if field_name in already_mapped_fields:
+            continue
+        expression = resolve_lineage_expression(
+            lineage=direct_lineage,
+            field_name=field_name,
+            source_structures=source_structures,
+            target_type=target_type,
+        )
+        expressions.append(expression)
+        already_mapped_fields.add(field_name)
     for template in target_structure.templates:
         for field_template in template.field_templates:
             lineage = field_template.lineage

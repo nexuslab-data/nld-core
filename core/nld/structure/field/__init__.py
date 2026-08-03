@@ -1,4 +1,12 @@
-from .field import Field, NamespacedField
+from .field import (
+    Field,
+    FieldTemplate,
+    FieldTemplateLineage,
+    FieldTemplateLineageRule,
+    FieldTemplateRelativePosition,
+    NamespacedField,
+    NamespacedFieldTemplate,
+)
 from .field_adapter import FieldAdapter, FieldNamingMapping, NamespacedFieldAdapter
 from .field_characterisation import (
     FieldCharacterisation,
@@ -15,13 +23,6 @@ from .field_characterisation_definition import (
     NamespacedFieldCharacterisationDefinition,
 )
 from .field_format_adapter import NamespacedFieldFormatAdapter
-from .field_template import (
-    FieldTemplate,
-    FieldTemplateLineage,
-    FieldTemplateLineageRule,
-    FieldTemplateRelativePosition,
-    NamespacedFieldTemplate,
-)
 
 __all__ = [
     "CharacterisationValidationFinding",

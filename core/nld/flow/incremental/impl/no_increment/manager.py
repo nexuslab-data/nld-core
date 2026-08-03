@@ -14,7 +14,7 @@ from nld.flow.incremental.impl.no_increment.sql_filter_manager import (
     NoIncrementSqlFilterManager,
 )
 from nld.flow.incremental.impl.no_increment.state import (
-    NoIncrementPlannedProcessingDetailledState,
+    NoIncrementPlannedProcessingDetailedState,
     NoIncrementPlannedProcessingState,
     NoIncrementProcessingState,
     NoIncrementSourceState,
@@ -42,7 +42,7 @@ class NoIncrementStateManager(
             NoIncrementSourceState,
             NoIncrementProcessingState,
             NoIncrementPlannedProcessingState,
-            NoIncrementPlannedProcessingDetailledState,
+            NoIncrementPlannedProcessingDetailedState,
         ]
         | None = None,
         secondary_incremental_state_backend_manager: IncrementalBackendStateManager[
@@ -51,7 +51,7 @@ class NoIncrementStateManager(
             NoIncrementSourceState,
             NoIncrementProcessingState,
             NoIncrementPlannedProcessingState,
-            NoIncrementPlannedProcessingDetailledState,
+            NoIncrementPlannedProcessingDetailedState,
         ]
         | None = None,
         parameters: dict[str, Any] | None = None,

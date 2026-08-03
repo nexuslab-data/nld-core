@@ -1,17 +1,18 @@
-import importlib
-from typing import Any, cast
+from typing import Any
 
-from nld.exceptions import ImplementationException
 from nld.flow.definition.flow_definition import DataFlowDefinition
 from nld.flow.execution import (
     ExecutionStateManagerFactory,
     FlowExecutionInfo,
 )
-from nld.flow.incremental.services import IncrementalStateManagerFactory
+from nld.flow.incremental.services import (
+    FlowIncrementalTypeRegistry,
+    IncrementalStateManagerFactory,
+    get_flow_incremental_type_registry,
+)
 from nld.flow.state.state_backend_connector_resolver import (
     StateBackendConnectorWrapper,
 )
-from nld.utils.inspect_utils import find_subclass_in_module
 from nld.utils.mixin import NldMixIn
 
 from .events import StateManagerLoadSuccessful
@@ -26,23 +27,33 @@ class FlowStateManagerFactory(NldMixIn):
     ExecutionStateManagerFactory to create complete FlowStateManager
     instances with all required backend managers.
 
-    Expected module structure:
-    - nld.flow.state.manager.{incremental_type}
+    The wrapper class is always the single concrete `FlowStateManager`;
+    every per-type behavior lives in the incremental state manager
+    resolved through the type's `FlowIncrementalTypeRegistry` manifest,
+    so external incremental types need no flow-level module at all.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        registry: FlowIncrementalTypeRegistry | None = None,
+    ) -> None:
         super().__init__()
-        self.incremental_state_manager_factory = IncrementalStateManagerFactory()
+        self._registry = (
+            registry if registry is not None else (get_flow_incremental_type_registry())
+        )
+        self.incremental_state_manager_factory = IncrementalStateManagerFactory(
+            registry=self._registry,
+        )
         self.execution_state_manager_factory = ExecutionStateManagerFactory()
-        self.flow_state_managers: dict[
-            str, type[FlowStateManager[Any, Any, Any, Any]]
-        ] = {}
 
-    def _load_flow_state_manager_class(
+    def get_flow_state_manager_class(
         self, incremental_type: str
     ) -> type[FlowStateManager[Any, Any, Any, Any]]:
         """
-        Dynamically load the FlowStateManager class for incremental type.
+        Get the FlowStateManager class for the specified incremental type.
+
+        The class is always the generic `FlowStateManager`; the lookup
+        only validates that the incremental type is registered.
 
         Args:
             incremental_type: The incremental type name
@@ -51,59 +62,12 @@ class FlowStateManagerFactory(NldMixIn):
             The FlowStateManager class
 
         Raises:
-            ImplementationException: If the module or class cannot be loaded
-        """
-        state_manager_module_path = f"nld.flow.state.manager.{incremental_type}"
-
-        try:
-            state_manager_module = importlib.import_module(
-                name=state_manager_module_path
-            )
-        except ModuleNotFoundError as e:
-            error_str = str(e)
-            expected_module = f"nld.flow.state.manager.{incremental_type}"
-            if f"No module named '{expected_module}'" in error_str:
-                raise ImplementationException(
-                    msg=f"FlowStateManager for incremental type "
-                    f"'{incremental_type}' is not available"
-                ) from e
-            else:
-                raise
-
-        manager_class = cast(
-            type[FlowStateManager[Any, Any, Any, Any]],
-            find_subclass_in_module(
-                module=state_manager_module,
-                base_class=FlowStateManager,
-            ),
-        )
-
-        self.flow_state_managers[incremental_type] = manager_class
-        self.log_event(StateManagerLoadSuccessful(incremental_type=incremental_type))
-
-        return manager_class
-
-    def get_flow_state_manager_class(
-        self, incremental_type: str
-    ) -> type[FlowStateManager[Any, Any, Any, Any]]:
-        """
-        Get the FlowStateManager class for the specified incremental type.
-
-        Args:
-            incremental_type: The incremental type name
-
-        Returns:
-            The FlowStateManager class for the specified incremental type
-
-        Raises:
             ImplementationException: If the incremental type is not available
         """
-        if incremental_type not in self.flow_state_managers:
-            return self._load_flow_state_manager_class(
-                incremental_type=incremental_type
-            )
+        self._registry.get(name=incremental_type)
+        self.log_event(StateManagerLoadSuccessful(incremental_type=incremental_type))
 
-        return self.flow_state_managers[incremental_type]
+        return FlowStateManager
 
     def create_flow_state_manager(
         self,

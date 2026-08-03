@@ -12,7 +12,7 @@ from nld.flow.incremental.impl.by_source_tst.backend.base_with_pydantic import (
     BySourceTstStateBackendManager,
 )
 from nld.flow.incremental.impl.by_source_tst.state import (
-    BySourceTstPlannedProcessingDetailledState,
+    BySourceTstPlannedProcessingDetailedState,
     BySourceTstProcessingState,
     BySourceTstState,
 )
@@ -326,16 +326,16 @@ class PostgreSQLBySourceTstStateBackendManager(
     def write_planned_processing_state(
         self,
         plan_state_uid: str,
-        detailled_state: BySourceTstPlannedProcessingDetailledState,
+        detailed_state: BySourceTstPlannedProcessingDetailedState,
     ) -> None:
         """Persist the by_source_tst planned-state row for a new PLANNED plan."""
         row = BySourceTstPlannedProcessingStateRow(
             plan_state_uid=plan_state_uid,
             flow_namespace=self.flow_namespace,
             flow_name=self.flow_name,
-            pull_from_timestamp=detailled_state.pull_from_timestamp,
-            pull_to_timestamp=detailled_state.pull_to_timestamp,
-            strategy=detailled_state.strategy,
+            pull_from_timestamp=detailed_state.pull_from_timestamp,
+            pull_to_timestamp=detailed_state.pull_to_timestamp,
+            strategy=detailed_state.strategy,
         )
         self.pydantic_manager.upsert_model(
             model=row,
@@ -349,7 +349,7 @@ class PostgreSQLBySourceTstStateBackendManager(
     def read_planned_processing_state(
         self,
         plan_state_uid: str,
-    ) -> BySourceTstPlannedProcessingDetailledState | None:
+    ) -> BySourceTstPlannedProcessingDetailedState | None:
         """Reconstruct the by_source_tst planned detail from its row."""
         rows = cast(
             list[BySourceTstPlannedProcessingStateRow],
@@ -363,7 +363,7 @@ class PostgreSQLBySourceTstStateBackendManager(
         if not rows:
             return None
         row = rows[0]
-        return BySourceTstPlannedProcessingDetailledState(
+        return BySourceTstPlannedProcessingDetailedState(
             plan_state_uid=row.plan_state_uid,
             strategy=row.strategy,
             pull_from_timestamp=row.pull_from_timestamp,

@@ -3,7 +3,7 @@ import datetime
 from pydantic import field_validator
 
 from nld.flow.incremental.models import (
-    FlowPlannedProcessingDetailledState,
+    FlowPlannedProcessingDetailedState,
     FlowPlannedProcessingState,
     FlowProcessingState,
     FlowSourceState,
@@ -137,8 +137,8 @@ class BySourceTstProcessingState(FlowProcessingState):
         return self.processing_status == IncrementalProcessingStatus.FAILED
 
 
-class BySourceTstPlannedProcessingDetailledState(
-    FlowPlannedProcessingDetailledState[BySourceTstProcessingState],
+class BySourceTstPlannedProcessingDetailedState(
+    FlowPlannedProcessingDetailedState[BySourceTstProcessingState],
 ):
     """Plan-time detail for a by_source_tst PLANNED plan."""
 
@@ -172,7 +172,7 @@ class BySourceTstPlannedProcessingDetailledState(
         cls,
         plan_state_uid: str,
         processing_state: BySourceTstProcessingState,
-    ) -> "BySourceTstPlannedProcessingDetailledState":
+    ) -> "BySourceTstPlannedProcessingDetailedState":
         return cls(
             plan_state_uid=plan_state_uid,
             strategy=processing_state.strategy,
@@ -182,6 +182,6 @@ class BySourceTstPlannedProcessingDetailledState(
 
 
 class BySourceTstPlannedProcessingState(
-    FlowPlannedProcessingState[BySourceTstPlannedProcessingDetailledState],
+    FlowPlannedProcessingState[BySourceTstPlannedProcessingDetailedState],
 ):
     """A PLANNED plan carrying a by_source_tst planned-detail payload."""

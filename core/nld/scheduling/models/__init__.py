@@ -1,7 +1,8 @@
+from .frequency import ExecutionFrequency, coarsest_frequency
 from .scheduling import (
     EnvironmentScheduling,
-    FlowScheduling,
-    NamespacedFlowSchedulingModel,
+    FlowTask,
+    NamespacedFlowTaskModel,
 )
 from .trigger import (
     FlowPrecondition,
@@ -13,11 +14,13 @@ from .trigger import (
 
 __all__ = [
     "EnvironmentScheduling",
+    "ExecutionFrequency",
     "FlowPrecondition",
-    "FlowScheduling",
+    "FlowTask",
     "FlowTrigger",
-    "NamespacedFlowSchedulingModel",
+    "NamespacedFlowTaskModel",
     "ScheduleTrigger",
     "SchedulingExecutionState",
     "Trigger",
+    "coarsest_frequency",
 ]

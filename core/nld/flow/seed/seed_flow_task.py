@@ -6,6 +6,7 @@ from nld.flow.incremental.impl.no_increment.logic import (
     NO_INCREMENT_FLOW_INCREMENTAL_LOGIC,
 )
 from nld.flow.incremental.models import FlowIncrementalLogic
+from nld.flow.quality import DataQualityContext
 from nld.flow.seed.seed_file_resolver import resolve_seed_file_path
 from nld.flow.seed.seed_write_strategy import get_seed_write_strategy
 from nld.flow.task.data_flow_task import DataFlowTask
@@ -102,6 +103,13 @@ class SeedFlowTask(DataFlowTask):
         self.log_info(
             f"Seed flow completed successfully for table: {table_path}, "
             f"{len(query_results)} queries executed"
+        )
+
+    def get_data_quality_context(self) -> DataQualityContext | None:
+        """Build the quality context from the resolved seed target."""
+        return self._build_sql_target_data_quality_context(
+            connector=self.target_connector,
+            target_schema=self.target_schema,
         )
 
     def _resolve_target_schema(self, target_schema: str | None) -> str:
