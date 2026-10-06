@@ -1,9 +1,9 @@
 from .structure_config import (
-    StructureProjectConfig,
-    StructureProjectMapping,
+    StructureNamespaceConfig,
+    StructureNamespaceMapping,
 )
 
 __all__ = [
-    "StructureProjectConfig",
-    "StructureProjectMapping",
+    "StructureNamespaceConfig",
+    "StructureNamespaceMapping",
 ]

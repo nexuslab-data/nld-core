@@ -39,7 +39,10 @@ class StructureListTask(StandardTask):
                 )
             key, value = item.split("=", 1)
             self.property_filters[key.strip()] = value.strip()
-        self.execution_context.load_entities(entity_types=[EntityTypeNames.STRUCTURE])
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.STRUCTURE],
+            namespace=self.namespace,
+        )
 
     def _matches(self, structure: Any) -> bool:
         properties = structure.get_all_properties()
@@ -62,14 +65,18 @@ class StructureListTask(StandardTask):
         property_keys = list(self.property_filters)
         headers = ["Name", "Namespace", "Type", *property_keys, "Tags"]
         rows: list[tuple[str, ...]] = []
-        for key in sorted(structures):
-            namespaced = structures[key]
+        # Same-name structures from several namespaces are listed side by
+        # side, so the plain name is shown next to its namespace column.
+        for namespaced in sorted(
+            structures.values(),
+            key=lambda item: (item.model.name, str(item.namespace)),
+        ):
             structure = namespaced.model
             if not self._matches(structure):
                 continue
             properties = structure.get_all_properties()
             row = [
-                key,
+                structure.name,
                 str(namespaced.namespace),
                 str(structure.structure_type),
                 *[str(properties.get(pk, "")) for pk in property_keys],

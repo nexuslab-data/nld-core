@@ -31,6 +31,7 @@ class OwnershipListTask(StandardTask):
                 EntityTypeNames.STRUCTURE_OWNER,
                 EntityTypeNames.FLOW_OWNER,
             ],
+            namespace=self.namespace,
         )
 
     def run(self, **kwargs: Any) -> bool:

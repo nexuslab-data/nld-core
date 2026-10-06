@@ -61,12 +61,17 @@ _EXPRESSION_TO_OPERATION: dict[type[exp.Expression], SQLOperationType] = {
     exp.Use: SQLOperationType.USE,
 }
 
+# INDEX DDL has no operation type of its own: it is table DDL, so it maps to
+# the table operations and is committed like them rather than falling back to
+# DATASET, which leaves the transaction (and its SHARE lock) open.
 _CREATE_KIND_TO_OPERATION: dict[str, SQLOperationType] = {
+    "INDEX": SQLOperationType.CREATE_TABLE,
     "TABLE": SQLOperationType.CREATE_TABLE,
     "VIEW": SQLOperationType.CREATE_VIEW,
 }
 
 _DROP_KIND_TO_OPERATION: dict[str, SQLOperationType] = {
+    "INDEX": SQLOperationType.DROP_TABLE,
     "TABLE": SQLOperationType.DROP_TABLE,
     "VIEW": SQLOperationType.DROP_VIEW,
 }

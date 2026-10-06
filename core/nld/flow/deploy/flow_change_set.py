@@ -25,12 +25,39 @@ class FlowChangeEntry(NldBaseModel):
 
 
 class DeployScope(NldBaseModel):
-    """Describes the scope of a change set."""
+    """Describes the scope of a change set.
+
+    ``namespaces`` holds the roots of the deployment units a namespace
+    deploy resolved to, ``groups`` the deploy groups that widened it, and
+    ``lock_keys`` the deploy targets the change set may change, which
+    the executor locks while applying it.
+    """
 
     downstream: bool = False
     flow_name: str | None = None
     namespace: str | None = None
     upstream: bool = False
+    groups: list[str] = []
+    lock_keys: list[str] = []
+    namespaces: list[str] = []
+
+    def describe(self) -> str:
+        """Describe the scope for lock holders and logs.
+
+        Example: ``namespace 'crm' (deploy group customer: crm, support)``.
+        """
+        if self.namespace is None:
+            description = "the whole project"
+        else:
+            description = f"namespace '{self.namespace}'"
+        if self.groups:
+            description += (
+                f" (deploy group {', '.join(self.groups)}: "
+                f"{', '.join(self.namespaces)})"
+            )
+        if self.flow_name is not None:
+            description += f", flow '{self.flow_name}'"
+        return description
 
 
 class FlowChangeSet(NldBaseModel):

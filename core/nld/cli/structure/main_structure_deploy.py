@@ -14,7 +14,7 @@ from . import params_structure
     with_project=True,
 )
 @params_structure.structure_name_optional
-@params_structure.structure_namespace
+@params_structure.deploy_namespace
 @params_structure.deploy_preview
 @params_structure.deploy_output
 @params_structure.deploy_adopt

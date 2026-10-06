@@ -5,6 +5,7 @@ import click
 from nld.cli import params, requires_wrapper
 from nld.cli.flow import params_flow
 from nld.flow.sql import SQLRenderingExecutionTask
+from nld.flow.structure_generation import StructureGenerateTask
 from nld.logging import StandardNldFormatter
 from nld.structure.task import (
     StructureAdaptTask,
@@ -93,6 +94,28 @@ def structure_validate(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
     known catalogue (built-in defaults merged with project definitions).
     """
     return execute_task(StructureValidateTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command(
+    group=structure,
+    command_name="generate",
+    logger_formatter=StandardNldFormatter(),
+    with_project=True,
+)
+@params_flow.flow_name_optional
+@params_flow.flow_namespace
+@params_structure.generate_check
+@params.nld_root_folder_path
+def structure_generate(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """Generate a flow target structure from the flow's single predecessor.
+
+    With --name, generates the target structure of that flow, creating its
+    YAML file when missing and merging into it otherwise. Without --name,
+    regenerates every already generated structure whose flow is visible from
+    --namespace. With --check, writes nothing and exits non-zero when a
+    generated structure is stale.
+    """
+    return execute_task(StructureGenerateTask)  # type: ignore[no-any-return]
 
 
 structure.add_command(deploy)

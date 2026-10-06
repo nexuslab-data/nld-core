@@ -27,7 +27,8 @@ class StructureAuditInfoTask(StandardTask):
     ) -> None:
         super().__init__(**kwargs)
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.STRUCTURE_AUDIT]
+            entity_types=[EntityTypeNames.STRUCTURE_AUDIT],
+            namespace=namespace,
         )
         namespaced = self.execution_context.entity_registry.get_structure_audit(
             entity_key=name,

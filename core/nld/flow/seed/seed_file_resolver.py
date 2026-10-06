@@ -1,24 +1,27 @@
 import csv
 import os
 
-from nld.pydantic import NldNamespace
+from nld.pydantic import SEEDS_FOLDER_NAME, NldEntityLayout
 
 
 def resolve_seed_file_path(
     entities_root_folder_path: str,
     namespace: str,
     seed_name: str,
+    entity_layout: NldEntityLayout | None = None,
 ) -> str:
     """Resolve the filesystem path to a CSV seed file.
 
     Builds the path:
         <entities_root>/seeds/<namespace_as_path>/<seed_name>.csv
-    where namespace dots are converted to path separators.
+    where namespace dots are converted to path separators, or the namespace
+    folder equivalent when the namespace belongs to a namespace folder.
 
     Args:
         entities_root_folder_path: root folder of the project entities.
         namespace: dot-separated namespace (e.g. "reference"), or "." for root.
         seed_name: the name of the seed, matching the structure entity name.
+        entity_layout: layout of the project entities; type first when None.
 
     Returns:
         Absolute path to the CSV seed file.
@@ -26,15 +29,15 @@ def resolve_seed_file_path(
     Raises:
         FileNotFoundError: if the resolved CSV file does not exist.
     """
-    ns = NldNamespace(namespace)
-    path_parts = [entities_root_folder_path, "seeds"]
-
-    if not ns.is_root:
-        path_parts.append(ns.to_path())
-
-    path_parts.append(f"{seed_name}.csv")
-
-    seed_file_path = os.path.join(*path_parts)
+    layout = entity_layout if entity_layout is not None else NldEntityLayout()
+    seed_file_path = os.path.join(
+        layout.get_entity_directory(
+            entities_root_folder_path=entities_root_folder_path,
+            entity_folder_name=SEEDS_FOLDER_NAME,
+            namespace=namespace,
+        ),
+        f"{seed_name}.csv",
+    )
 
     if not os.path.isfile(seed_file_path):
         raise FileNotFoundError(

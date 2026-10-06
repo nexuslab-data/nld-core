@@ -10,6 +10,7 @@ from nld.flow.graph.data_flow_graph import (
     strip_node_type_prefix,
 )
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
+from nld.pydantic import NldEntityLayout, build_entity_key
 from nld.service import EntityTypeNames
 from nld.task.base import StandardTask
 
@@ -60,6 +61,7 @@ class DeployImpactTask(StandardTask):
         for relative_path in changed_paths:
             self._map_path_to_asset(
                 relative_path=relative_path,
+                entity_layout=self.execution_context.project.entity_layout,
                 changed_flows=changed_flows,
                 changed_structures=changed_structures,
                 changed_change_files=changed_change_files,
@@ -139,34 +141,66 @@ class DeployImpactTask(StandardTask):
             )
         return result.stdout
 
-    @staticmethod
     def _map_path_to_asset(
+        self,
         relative_path: str,
+        entity_layout: NldEntityLayout,
         changed_flows: set[str],
         changed_structures: set[str],
         changed_change_files: list[str],
         unmapped_paths: list[str],
     ) -> None:
-        """Map one changed file to its asset, by project layout."""
+        """Map one changed file to its asset, by project layout.
+
+        The entity folder and the namespace are read through the entity
+        layout, so a file stored in a namespace folder maps to the same asset
+        as its type-first equivalent: ``source/flows/raw/load.sql`` and
+        ``flows/source/raw/load.sql`` both map to flow ``source.raw.load``.
+        """
         parts = relative_path.split("/")
-        root_folder = parts[0]
         base_name, extension = os.path.splitext(parts[-1])
 
-        if root_folder == ".deployments" and extension in (".yml", ".yaml"):
+        if parts[0] == ".deployments" and extension in (".yml", ".yaml"):
             changed_change_files.append(base_name)
             return
-        if len(parts) < 2 or extension not in ASSET_FILE_EXTENSIONS:
+        if extension not in ASSET_FILE_EXTENSIONS:
             unmapped_paths.append(relative_path)
             return
 
-        namespace_parts = parts[1:-1]
-        full_name = ".".join([*namespace_parts, base_name])
-        if root_folder == "flows":
-            changed_flows.add(full_name)
-        elif root_folder == "structure":
-            changed_structures.add(full_name)
-        else:
+        changed_assets_by_folder_name = {
+            self._get_entity_folder_name(
+                entity_type=EntityTypeNames.DATA_FLOW_DEFINITION,
+            ): changed_flows,
+            self._get_entity_folder_name(
+                entity_type=EntityTypeNames.STRUCTURE,
+            ): changed_structures,
+        }
+        location = entity_layout.find_entity_location(
+            relative_file_path=relative_path,
+            entity_folder_names=list(changed_assets_by_folder_name),
+        )
+        if location is None:
             unmapped_paths.append(relative_path)
+            return
+
+        entity_folder_name, namespace = location
+        changed_assets_by_folder_name[entity_folder_name].add(
+            build_entity_key(
+                namespace=namespace,
+                entity_name=base_name,
+            ),
+        )
+
+    def _get_entity_folder_name(self, entity_type: str) -> str:
+        """Get the folder an entity type is stored under."""
+        entity_definition = (
+            self.execution_context.entity_registry.get_entity_definition(
+                entity_name=entity_type,
+            )
+        )
+        if entity_definition is None:
+            raise NldRuntimeException(f"Unknown entity type '{entity_type}'")
+        return entity_definition.folder_name
 
     def _expand_impact(
         self,

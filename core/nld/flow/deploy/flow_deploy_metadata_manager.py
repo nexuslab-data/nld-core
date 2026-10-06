@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Callable
 from typing import Any
 
 from nld.connector.base.connector import SQLDataConnector
@@ -271,13 +272,14 @@ class FlowDeployMetadataManager(NldLoggable):
     def get_all_deployed_flows(
         self,
         metadata_schema: str,
-        namespace: str | None = None,
+        is_namespace_in_scope: Callable[[str], bool] | None = None,
     ) -> dict[str, FlowDeployMetadataRow]:
         """Return all currently deployed flows, optionally filtered by namespace.
 
-        When a namespace is provided, returns flows whose namespace matches
-        exactly or starts with the namespace followed by a dot. This matches
-        the hierarchical namespace behaviour of the entity registry.
+        ``is_namespace_in_scope`` keeps the flows of a namespace deploy
+        scope only — the same predicate that selects the scope's flows
+        from the assets, so a deployed flow outside the scope never reads
+        as REMOVED and a flow inside it never reads as NEW.
 
         Returns:
             Dict keyed by ``namespace.flow_name`` (or just ``flow_name``
@@ -293,9 +295,8 @@ class FlowDeployMetadataManager(NldLoggable):
         for model in models:
             row: FlowDeployMetadataRow = model  # type: ignore[assignment]
 
-            if namespace is not None and not self._namespace_matches(
-                row_namespace=row.namespace,
-                filter_namespace=namespace,
+            if is_namespace_in_scope is not None and not is_namespace_in_scope(
+                row.namespace,
             ):
                 continue
 
@@ -307,16 +308,6 @@ class FlowDeployMetadataManager(NldLoggable):
             rows[key] = row
 
         return rows
-
-    @staticmethod
-    def _namespace_matches(
-        row_namespace: str,
-        filter_namespace: str,
-    ) -> bool:
-        """Check if a row namespace belongs to the filter namespace hierarchy."""
-        return row_namespace == filter_namespace or row_namespace.startswith(
-            f"{filter_namespace}."
-        )
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -3,6 +3,7 @@ from typing import Any
 from nld.flow.definition import DataFlowDefinition, NamespacedDataFlowDefinition
 from nld.flow.sql.sql_query_resolver import render_sql_from_flow_definition
 from nld.parameters import ExecutionParameterDefinition
+from nld.pydantic import FLOWS_FOLDER_NAME
 from nld.service.file_output_service import FileOutputService
 from nld.task import BaseTask
 from nld.task.context.context import NldExecutionContext
@@ -77,8 +78,9 @@ class SQLRenderingFlowTask(BaseTask):
         file_output_service = FileOutputService(
             root_folder_path=context.get_nld_root_folder_path(),
             override_output_folder_path=self.override_output_folder_path,
+            entity_layout=context.entity_layout,
         )
-        internal_folder_name = "flows"
+        internal_folder_name = FLOWS_FOLDER_NAME
         file_output_service.write_file(
             file_name=file_name,
             content=content,

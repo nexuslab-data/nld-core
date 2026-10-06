@@ -16,6 +16,21 @@ structure_namespace = click.option(
     help="Namespace of the structure",
 )
 
+deploy_namespace = click.option(
+    "--namespace",
+    required=False,
+    default=None,
+    help=(
+        "Deploy one namespace on its own, when nld_project.yml declares "
+        "it with 'deploy: {unit: true}' or a deploy group: the namespace "
+        "and its descendants mapped to the same connection and schema. "
+        "Descendants mapped elsewhere are left out, a group member "
+        "brings every member, and a target outside the scope refuses "
+        "the deploy. With --name, it only locates the asset. Without "
+        "it, the whole project deploys."
+    ),
+)
+
 renderer = click.option(
     "--renderer",
     required=True,
@@ -239,6 +254,16 @@ tag_filter = click.option(
     "tag",
     multiple=True,
     help="Filter by tag (repeatable; matches are ANDed).",
+)
+
+generate_check = click.option(
+    "--check",
+    is_flag=True,
+    default=False,
+    help=(
+        "Write nothing: print the diff of every generated structure that a "
+        "generation would change, and exit non-zero when one is stale."
+    ),
 )
 
 

@@ -115,7 +115,7 @@ class AbstractDataFlowStateTask(StandardTask):
 
         self.data_flow_definition.load_task_module(
             namespace=self.flow_namespace,
-            entity_path=self.execution_context.project.entity_path,
+            entity_layout=self.execution_context.project.entity_layout,
             additional_task_paths=(
                 self.execution_context.project.flows_python_additional_paths
             ),

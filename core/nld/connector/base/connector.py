@@ -351,7 +351,7 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         structure: Structure,
         table_exists: str = "skip",
         **kwargs: Any,
-    ) -> QueryExecResult:
+    ) -> QueryExecResult | None:
         """Create a table in the database from a Structure definition.
 
         Builds a CREATE TABLE statement by iterating over the fields
@@ -367,7 +367,8 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
                 or "fail" (raise an error). Defaults to "skip".
 
         Returns:
-            The result of the CREATE TABLE query execution.
+            The result of the CREATE TABLE query execution, or None when
+            the table already existed and was skipped.
         """
         raise NotImplementedMethodException(self.__class__, "create_table")
 

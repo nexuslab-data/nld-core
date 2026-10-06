@@ -1,3 +1,10 @@
+from .config import (
+    DEFAULT_ALERT_ON,
+    DEFAULT_MAX_ATTEMPTS,
+    AlertingConfig,
+    SchedulingNamespaceConfig,
+    SchedulingNamespaceMapping,
+)
 from .models import (
     EnvironmentScheduling,
     ExecutionFrequency,
@@ -17,16 +24,26 @@ from .scheduling_exceptions import (
     NldSchedulingReferenceError,
 )
 from .services import (
+    MAX_ATTEMPTS_TASK_ORIGIN,
+    NO_ALERTING_ORIGIN,
+    ResolvedAlerting,
+    ResolvedMaxAttempts,
     SchedulingFrequencyEntry,
     SchedulingFrequencyReport,
     SchedulingFrequencyReporter,
     SchedulingGraph,
+    SchedulingPolicy,
     SchedulingResolver,
     SchedulingValidator,
     build_scheduling_node_id,
 )
 
 __all__ = [
+    "DEFAULT_ALERT_ON",
+    "DEFAULT_MAX_ATTEMPTS",
+    "MAX_ATTEMPTS_TASK_ORIGIN",
+    "NO_ALERTING_ORIGIN",
+    "AlertingConfig",
     "EnvironmentScheduling",
     "ExecutionFrequency",
     "FlowPrecondition",
@@ -37,12 +54,17 @@ __all__ = [
     "NldSchedulingError",
     "NldSchedulingPredecessorError",
     "NldSchedulingReferenceError",
+    "ResolvedAlerting",
+    "ResolvedMaxAttempts",
     "ScheduleTrigger",
     "SchedulingExecutionState",
     "SchedulingFrequencyEntry",
     "SchedulingFrequencyReport",
     "SchedulingFrequencyReporter",
     "SchedulingGraph",
+    "SchedulingNamespaceConfig",
+    "SchedulingNamespaceMapping",
+    "SchedulingPolicy",
     "SchedulingResolver",
     "SchedulingValidator",
     "Trigger",

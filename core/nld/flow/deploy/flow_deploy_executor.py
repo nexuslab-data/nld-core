@@ -3,6 +3,11 @@ import uuid
 from typing import Any, ClassVar, cast
 
 from nld.connector.base.connector import SQLDataConnector
+from nld.deploy import (
+    DeploymentLockManager,
+    DeploymentScopeManager,
+    DeploymentScopeRow,
+)
 from nld.deploy.change_file_loader import (
     get_flow_renames,
     get_reloads,
@@ -33,7 +38,7 @@ from nld.flow.deploy.flow_deploy_metadata_models import (
 )
 from nld.flow.task.data_flow_executor import DataFlowExecutor
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
-from nld.pydantic.namespace import build_entity_key
+from nld.pydantic import build_entity_key
 from nld.service import EntityTypeNames
 from nld.structure.deploy import StructureMetadataBackendManager
 from nld.structure.deploy.deploy_target_factory import StructureDeployTargetFactory
@@ -44,6 +49,8 @@ from nld.structure.deploy.structure_change import (
 from nld.task.base import StandardTask
 from nld.utils import resolve_variables
 from nld.utils.datetime_util import get_current_datetime
+
+FLOW_DEPLOY_COMMAND = "flow deploy"
 
 
 class FlowDeployResult:
@@ -227,10 +234,27 @@ class FlowDeployExecutor(StandardTask):
         self,
         **kwargs: Any,
     ) -> FlowDeployResult:
-        """Apply the configured change set."""
-        return self._execute_deployment(
-            change_set=self._change_set,
+        """Apply the configured change set, holding its targets' deploy lock.
+
+        A deploy changing a target another deploy is changing refuses
+        before recording anything; deploys of distinct targets run
+        concurrently.
+        """
+        deployment_id = str(uuid.uuid4())
+        lock_manager = DeploymentLockManager(
+            connector=self._metadata_backend_connector,
         )
+        with lock_manager.hold(
+            metadata_schema=self._metadata_schema,
+            lock_keys=self._change_set.scope.lock_keys,
+            holder_id=deployment_id,
+            command=FLOW_DEPLOY_COMMAND,
+            scope=self._change_set.scope.describe(),
+        ):
+            return self._execute_deployment(
+                change_set=self._change_set,
+                deployment_id=deployment_id,
+            )
 
     # ------------------------------------------------------------------
     # Change-set execution
@@ -239,10 +263,9 @@ class FlowDeployExecutor(StandardTask):
     def _execute_deployment(
         self,
         change_set: FlowChangeSet,
+        deployment_id: str,
     ) -> FlowDeployResult:
         """Execute a single change set."""
-        deployment_id = str(uuid.uuid4())
-
         result = FlowDeployResult(deployment_id=deployment_id)
         skipped_flow_names: set[str] = set()
 
@@ -263,6 +286,21 @@ class FlowDeployExecutor(StandardTask):
             self._metadata_manager.insert_deployment(
                 metadata_schema=self._metadata_schema,
                 record=deployment_row,
+            )
+            DeploymentScopeManager(
+                connector=self._metadata_backend_connector,
+            ).record(
+                metadata_schema=self._metadata_schema,
+                row=DeploymentScopeRow.build(
+                    deployment_id=deployment_id,
+                    command=FLOW_DEPLOY_COMMAND,
+                    recorded_at=get_current_datetime(),
+                    requested_namespace=change_set.scope.namespace,
+                    requested_name=change_set.scope.flow_name,
+                    unit_namespaces=change_set.scope.namespaces,
+                    deploy_groups=change_set.scope.groups,
+                    lock_keys=change_set.scope.lock_keys,
+                ),
             )
 
         # --- Build lookup maps from links for interleaved execution
@@ -640,7 +678,7 @@ class FlowDeployExecutor(StandardTask):
         ):
             return None, {}
 
-        structure_config = self.execution_context.project.structure_config
+        structure_config = self.execution_context.project.structure_namespace_config
         mapping = structure_config.get_mapping(
             namespace=structure_entry.namespace,
         )
@@ -878,11 +916,13 @@ class FlowDeployExecutor(StandardTask):
         deployment_id: str,
         directive_outcomes: dict[str, str],
     ) -> None:
-        """Record fully-applied change files in the backend applied-log.
+        """Record the resolved directives and completed change files.
 
-        A change file is recorded only when every one of its
-        directives resolved in this run — a scoped deploy leaves the
-        files with out-of-scope directives pending for a later run.
+        Each directive resolved in this run is recorded, so no later
+        deploy applies it again; a change file joins the applied-log
+        once every one of its directives is recorded — a scoped deploy
+        leaves the directives outside its scope pending for the deploy
+        of their own scope.
         """
         if self._metadata_schema is None:
             return
@@ -896,7 +936,7 @@ class FlowDeployExecutor(StandardTask):
             metadata_schema=self._metadata_schema,
         )
 
-        change_log_manager.record_fully_applied(
+        change_log_manager.record_applied_directives(
             metadata_schema=self._metadata_schema,
             pending_change_files=change_set.pending_change_files,
             directive_outcomes=directive_outcomes,
@@ -926,7 +966,7 @@ class FlowDeployExecutor(StandardTask):
 
         # Compute hashes from the current flow definition
         entities_root = self.execution_context.project.entities_root_folder_path
-        entity_path = self.execution_context.project.entity_path
+        entity_layout = self.execution_context.project.entity_layout
         additional_flow_task_types = (
             self.execution_context.project.flow_config.additional_flow_task_types
         )
@@ -955,11 +995,12 @@ class FlowDeployExecutor(StandardTask):
             entities_root_folder_path=entities_root,
             namespace=entry.namespace,
             flow_name=entry.flow_name,
+            entity_layout=entity_layout,
         )
         python_hash = compute_flow_python_hash(
             flow_definition=flow_def,
             namespace=entry.namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )
@@ -967,7 +1008,7 @@ class FlowDeployExecutor(StandardTask):
             flow_definition=flow_def,
             entities_root_folder_path=entities_root,
             namespace=entry.namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )

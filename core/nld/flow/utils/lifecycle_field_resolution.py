@@ -24,9 +24,12 @@ def resolve_upsert_field_params(
     Returns ``(exclude_from_update, expression_overrides, exclude_from_match)``.
 
     The insert timestamp field (``REC_INSERT_TST``) is excluded from the
-    ``UPDATE SET`` clause (insert-only). The last update timestamp field
+    ``UPDATE SET`` clause (insert-only), and so is the insert user field
+    (``REC_INSERT_BY``). The last update timestamp field
     (``REC_LAST_UPDATE_TST``) is overridden with ``CURRENT_TIMESTAMP`` on
-    update. Fields characterised ``EXCLUDE_FROM_UPSERT_UPDATE`` are excluded from
+    update; ``REC_LAST_UPDATE_BY`` carries no SQL override because a flow
+    execution has no acting user. Fields characterised
+    ``EXCLUDE_FROM_UPSERT_UPDATE`` are excluded from
     both ``UPDATE SET`` and change detection; ``EXCLUDE_FROM_UPSERT_MATCH``
     fields are updated but excluded from change detection.
     """
@@ -42,6 +45,12 @@ def resolve_upsert_field_params(
     )
     if insert_tst_field is not None:
         exclude_from_update.append(insert_tst_field)
+
+    insert_by_field = target_structure.get_field_name_with_characterisation(
+        FieldCharacterisationDefinitionNames.REC_INSERT_BY,
+    )
+    if insert_by_field is not None and insert_by_field not in exclude_from_update:
+        exclude_from_update.append(insert_by_field)
 
     update_tst_field = target_structure.get_field_name_with_characterisation(
         FieldCharacterisationDefinitionNames.REC_LAST_UPDATE_TST,

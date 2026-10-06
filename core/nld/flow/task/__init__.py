@@ -3,6 +3,7 @@ from .data_flow_exec_task import (
     DataFlowExecutionTask,
 )
 from .data_flow_info import DataFlowInfoTask
+from .data_flow_list import DataFlowListTask
 from .data_flow_state_task import (
     AbstractDataFlowStateTask,
     FlowStateExecutionGetHistoryTask,
@@ -19,6 +20,7 @@ __all__ = [
     "DataFlowDependencyGraphTask",
     "DataFlowExecutionTask",
     "DataFlowInfoTask",
+    "DataFlowListTask",
     "DataFlowTask",
     "FlowStateExecutionGetHistoryTask",
     "FlowStateExecutionGetStateTask",

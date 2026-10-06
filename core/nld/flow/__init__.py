@@ -1,4 +1,9 @@
-from .config import FlowConfig, FlowProjectConfig, FlowProjectMapping
+from .config import (
+    FlowConfig,
+    FlowNamespaceConfig,
+    FlowNamespaceMapping,
+    FlowProjectConfig,
+)
 from .incremental.models import (
     FlowRequest,
     FlowRequestStatus,
@@ -15,8 +20,9 @@ __all__ = [
     "FlowConfig",
     "FlowExecStatus",
     "FlowLoadingStrategies",
+    "FlowNamespaceConfig",
+    "FlowNamespaceMapping",
     "FlowProjectConfig",
-    "FlowProjectMapping",
     "FlowRequest",
     "FlowRequestStatus",
     "FlowRequestType",

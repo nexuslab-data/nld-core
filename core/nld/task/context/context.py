@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 
 from nld.connector.base import ConnectionConfigs, DataConnector
 from nld.connector.manager import ConnectorFactory
+from nld.flow.alerting import FlowAlertingProvider
 from nld.logging.logger import NldLoggable
 from nld.project import Project
+from nld.pydantic import NldEntityLayout
 from nld.service import FileOutputService
 from nld.service.nld_entity_registry import NldEntityRegistry
 from nld.task.context.env_var import (
@@ -38,9 +40,11 @@ class NldExecutionContext(NldLoggable):
         self,
         task_request: TaskRequest,
         with_project: bool = False,
+        additional_entity_paths: list[str] | None = None,
     ):
         super().__init__()
         self.task_request = task_request
+        self.additional_entity_paths = additional_entity_paths or []
         self.exec_info = ExecutionInfo(
             completion_label=self.task_request.completion_label,
             exec_name=self.task_request.execution_name,
@@ -56,6 +60,7 @@ class NldExecutionContext(NldLoggable):
         self.connector_factory = self.init_connector_factory()
         self._file_output_service: FileOutputService | None = None
         self._project: Project | None = None
+        self._alerting_provider: FlowAlertingProvider | None = None
         self._flow_environment_variables: dict[str, str] = {}
         if with_project:
             self.init_project()
@@ -64,7 +69,30 @@ class NldExecutionContext(NldLoggable):
         self._project = Project.from_yaml(
             root_path=self.get_nld_root_folder_path(),
             load_entities=False,
+            additional_entity_paths=self.additional_entity_paths,
         )
+        self._alerting_provider = FlowAlertingProvider.from_project(
+            project=self._project,
+        )
+
+    @property
+    def alerting_provider(self) -> FlowAlertingProvider:
+        """The alerting provider of this execution.
+
+        Built when the project is initialised (an inert one without a
+        project), it hands every flow the alerting service in force for its
+        namespace — see ``FlowAlertingProvider``. ``set_alerting_provider``
+        replaces it, for tests and embedding callers.
+        """
+        if self._alerting_provider is None:
+            self._alerting_provider = FlowAlertingProvider.from_project(
+                project=self._project,
+            )
+        return self._alerting_provider
+
+    def set_alerting_provider(self, provider: FlowAlertingProvider) -> None:
+        """Replace the alerting provider of this execution."""
+        self._alerting_provider = provider
 
     @property
     def project(self) -> Project:
@@ -81,15 +109,18 @@ class NldExecutionContext(NldLoggable):
         self,
         force_reload: bool = False,
         entity_types: list[str] | None = None,
+        namespace: str | None = None,
     ) -> None:
         """Load entities into project's entity registry.
 
         When ``entity_types`` is provided, only those types and their required
-        dependencies are loaded; otherwise every entity type is loaded.
+        dependencies are loaded; otherwise every entity type is loaded. When
+        ``namespace`` is provided, only that namespace lineage is loaded.
         """
         self.project.load_entities(
             force_reload=force_reload,
             entity_types=entity_types,
+            namespace=namespace,
         )
 
     @property
@@ -145,8 +176,16 @@ class NldExecutionContext(NldLoggable):
             self._file_output_service = FileOutputService(
                 root_folder_path=self.get_nld_root_folder_path(),
                 override_output_folder_path=self.resolve_output_folder_path(),
+                entity_layout=self.entity_layout,
             )
         return self._file_output_service
+
+    @property
+    def entity_layout(self) -> NldEntityLayout | None:
+        """Get the entity layout of the project, None without a project."""
+        if self._project is None:
+            return None
+        return self._project.entity_layout
 
     def resolve_output_folder_path(self) -> str | None:
         """Resolve the output folder path from task request parameters.

@@ -79,7 +79,7 @@ Each concept has a detailed guide in the [nld-agents](https://github.com/nexusla
 |---|---|---|
 | **Flow** | A unit of data movement/transformation, defined in YAML and backed by a `DataFlowTask` (Python) or a SQL definition. Flows declare their connectors, target structure, and predecessors, and the framework orders and runs them. | `nld-core-usage:guide-flows` |
 | **Structure** | A typed schema — fields with data types, lengths, and *characterisations* (primary key, unique, functional key, …). Structures can be deployed to a database and diffed against the live schema. | `nld-core-usage:guide-structures` |
-| **Connector** | A storage abstraction over a **database** (which also brings a query engine), an **object storage**, or a **file storage** — PostgreSQL, Snowflake, BigQuery, DuckDB, S3, Azure Blob, or the local file system. The same flow runs against any connector. | `nld-core-usage:guide-connections` |
+| **Connector** | A storage abstraction over a **database** (which also brings a query engine), an **object storage**, or a **file storage** — PostgreSQL, Snowflake, BigQuery, DuckDB, SQLite, S3, Azure Blob, or the local file system. The same flow runs against any connector. | `nld-core-usage:guide-connections` |
 | **Incremental** | Strategies (`by_key`, `by_source_tst`, `no_increment`) backed by persisted state and watermarks, so each run propagates only the data that changed at the source. | `nld-core-usage:guide-incremental` |
 | **Execution monitoring** | Every flow run and its steps are recorded — status (succeeded / warning / failed), start and end time, the requestor, and the load strategy — to a state backend you can query to see what ran and whether it succeeded. | `nld-core-usage:how-to-get-execution-info` |
 
@@ -91,6 +91,7 @@ Each concept has a detailed guide in the [nld-agents](https://github.com/nexusla
 | Snowflake | `snowflake` |
 | BigQuery | `bigquery` |
 | DuckDB | `duckdb` |
+| SQLite | built-in |
 | S3 | `s3_blob_storage` |
 | Azure Blob Storage | `azure_blob_storage` |
 | Local File System | built-in |

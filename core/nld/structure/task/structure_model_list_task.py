@@ -25,7 +25,8 @@ class StructureModelListTask(StandardTask):
         super().__init__(**kwargs)
         self.namespace = namespace
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.STRUCTURE_MODEL]
+            entity_types=[EntityTypeNames.STRUCTURE_MODEL],
+            namespace=self.namespace,
         )
 
     def run(self, **kwargs: Any) -> bool:

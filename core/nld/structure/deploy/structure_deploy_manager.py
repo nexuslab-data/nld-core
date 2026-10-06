@@ -259,8 +259,22 @@ class StructureDeployManager:
             field_diff.action == DiffAction.MODIFY and field_diff.default_to is not None
             for field_diff in diff.field_diffs
         )
+        # A type, length or precision change is impossible in place on
+        # engines without ALTER COLUMN TYPE (SQLite), and so is turning an
+        # existing column mandatory: the rebuild copies the data into a
+        # table declared the way the asset asks for.
+        needs_type_rebuild = not self._capabilities.alter_column_type and any(
+            field_diff.action == DiffAction.MODIFY
+            and (
+                field_diff.data_type_to is not None
+                or field_diff.length_to is not None
+                or field_diff.precision_to is not None
+                or field_diff.nullable_to is not None
+            )
+            for field_diff in diff.field_diffs
+        )
         rebuild_required = (
-            diff.order_mismatch or needs_default_rebuild
+            diff.order_mismatch or needs_default_rebuild or needs_type_rebuild
         ) and field_resolution.current is not None
         if rebuild_required and field_resolution.current is not None:
             deploy_statements = self._build_rebuild_backup_statements(

@@ -4,6 +4,7 @@ import json
 
 from nld.flow.definition.flow_definition import DataFlowDefinition
 from nld.flow.sql.sql_file_resolver import resolve_sql_file_path
+from nld.pydantic import NldEntityLayout
 
 
 def build_flow_yaml_snapshot_json(flow_definition: DataFlowDefinition) -> str:
@@ -45,6 +46,7 @@ def compute_flow_sql_hash(
     entities_root_folder_path: str,
     namespace: str,
     flow_name: str,
+    entity_layout: NldEntityLayout | None = None,
 ) -> str | None:
     """Compute a SHA-256 hash of the flow's SQL file content.
 
@@ -54,6 +56,7 @@ def compute_flow_sql_hash(
         entities_root_folder_path: root folder of the project entities
         namespace: dot-separated namespace
         flow_name: the name of the flow
+        entity_layout: layout of the project entities; type first when None
 
     Returns:
         Uppercase hex SHA-256 digest, or None if no SQL file.
@@ -63,6 +66,7 @@ def compute_flow_sql_hash(
             entities_root_folder_path=entities_root_folder_path,
             namespace=namespace,
             flow_name=flow_name,
+            entity_layout=entity_layout,
         )
     except FileNotFoundError:
         return None
@@ -76,7 +80,7 @@ def compute_flow_sql_hash(
 def compute_flow_python_hash(
     flow_definition: DataFlowDefinition,
     namespace: str,
-    entity_path: str | None,
+    entity_layout: NldEntityLayout | None,
     additional_task_paths: list[str] | None,
     additional_flow_task_types: dict[str, str] | None = None,
 ) -> str:
@@ -88,7 +92,7 @@ def compute_flow_python_hash(
     Args:
         flow_definition: the flow definition
         namespace: dot-separated namespace
-        entity_path: project entity path
+        entity_layout: project entity layout
         additional_task_paths: optional additional module search paths
         additional_flow_task_types: user-configured task type mappings
 
@@ -97,7 +101,7 @@ def compute_flow_python_hash(
     """
     _module, task_class = flow_definition.resolve_task_module(
         namespace=namespace,
-        entity_path=entity_path,
+        entity_layout=entity_layout,
         additional_task_paths=additional_task_paths,
         additional_flow_task_types=additional_flow_task_types,
     )
@@ -117,7 +121,7 @@ def compute_flow_definition_hash(
     flow_definition: DataFlowDefinition,
     entities_root_folder_path: str,
     namespace: str,
-    entity_path: str | None,
+    entity_layout: NldEntityLayout | None,
     additional_task_paths: list[str] | None = None,
     additional_flow_task_types: dict[str, str] | None = None,
 ) -> str:
@@ -129,7 +133,7 @@ def compute_flow_definition_hash(
         flow_definition: the flow definition
         entities_root_folder_path: root folder of the project entities
         namespace: dot-separated namespace
-        entity_path: project entity path
+        entity_layout: project entity layout
         additional_task_paths: optional additional module search paths
         additional_flow_task_types: user-configured task type mappings
 
@@ -141,11 +145,12 @@ def compute_flow_definition_hash(
         entities_root_folder_path=entities_root_folder_path,
         namespace=namespace,
         flow_name=flow_definition.name,
+        entity_layout=entity_layout,
     )
     python_hash = compute_flow_python_hash(
         flow_definition=flow_definition,
         namespace=namespace,
-        entity_path=entity_path,
+        entity_layout=entity_layout,
         additional_task_paths=additional_task_paths,
         additional_flow_task_types=additional_flow_task_types,
     )

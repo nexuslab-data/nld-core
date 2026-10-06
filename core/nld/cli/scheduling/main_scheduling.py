@@ -7,6 +7,8 @@ from nld.logging import StandardNldFormatter
 from nld.scheduling.task import (
     SchedulingDependencyGraphTask,
     SchedulingFrequencyTask,
+    SchedulingInfoTask,
+    SchedulingListTask,
     SchedulingValidateTask,
 )
 from nld.task.task_utils import execute_task
@@ -64,3 +66,33 @@ def scheduling_deps(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
 def scheduling_frequency(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
     """Report the intended execution frequency of an environment's flows."""
     return execute_task(SchedulingFrequencyTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command(
+    group=scheduling,
+    command_name="info",
+    logger_formatter=StandardNldFormatter(),
+    silent_completion=True,
+    with_project=True,
+)
+@params_scheduling.task_name
+@params_scheduling.task_namespace
+@params.nld_root_folder_path
+def scheduling_info(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """Get scheduled flow task information."""
+    return execute_task(SchedulingInfoTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command(
+    group=scheduling,
+    command_name="list",
+    logger_formatter=StandardNldFormatter(),
+    silent_completion=True,
+    with_project=True,
+)
+@params_scheduling.task_namespace
+@params_scheduling.environment
+@params.nld_root_folder_path
+def scheduling_list(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """List scheduled flow tasks, optionally scoped to one environment."""
+    return execute_task(SchedulingListTask)  # type: ignore[no-any-return]

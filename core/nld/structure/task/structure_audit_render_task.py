@@ -48,7 +48,8 @@ class StructureAuditRenderTask(StandardTask):
         self.override_output_folder_path = override_output_folder_path
         self.stdout = stdout
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.STRUCTURE_AUDIT]
+            entity_types=[EntityTypeNames.STRUCTURE_AUDIT],
+            namespace=namespace,
         )
         namespaced = self.execution_context.entity_registry.get_structure_audit(
             entity_key=name,
@@ -67,6 +68,7 @@ class StructureAuditRenderTask(StandardTask):
         file_output_service = FileOutputService(
             root_folder_path=self.execution_context.get_nld_root_folder_path(),
             override_output_folder_path=self.override_output_folder_path,
+            entity_layout=self.execution_context.entity_layout,
         )
         file_output_service.write_file(
             file_name=file_name,

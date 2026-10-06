@@ -106,7 +106,7 @@ class StructureAuditRunTask(StandardTask):
         resolved_namespace = namespaced.namespace
         structure = namespaced.model
 
-        config = self.execution_context.project.structure_config
+        config = self.execution_context.project.structure_namespace_config
         mapping = config.get_mapping(namespace=resolved_namespace)
         connection_name = self.connection or mapping.default_connection_name
         schema = structure.get_property("schema") or mapping.schema_name
@@ -123,6 +123,7 @@ class StructureAuditRunTask(StandardTask):
             override_output_folder_path=(
                 self.execution_context.project.entities_root_folder_path
             ),
+            entity_layout=self.execution_context.project.entity_layout,
         )
         output_path = file_output_service.resolve_output_file_path(
             file_name=f"{audit_name}.yml",

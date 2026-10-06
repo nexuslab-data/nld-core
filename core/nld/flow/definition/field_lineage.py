@@ -28,6 +28,13 @@ class FieldLineage(NldBaseModel):
             "or just field_name for auto-resolution"
         ),
     )
+    data_type: str | None = PydanticField(
+        default=None,
+        description=(
+            "Data type of the target field, used by nld structure generate "
+            "when it cannot be taken from the origin field"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_at_least_one_field_set(self) -> "FieldLineage":

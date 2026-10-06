@@ -460,6 +460,7 @@ class SQLFlowTask(DataFlowTask):
             entities_root_folder_path=context.project.entities_root_folder_path,
             namespace=self.namespaced_data_flow_definition.namespace,
             flow_name=self.data_flow_definition.name,
+            entity_layout=context.project.entity_layout,
         )
         if sql_file_path is not None:
             return load_sql_file_content(sql_file_path)

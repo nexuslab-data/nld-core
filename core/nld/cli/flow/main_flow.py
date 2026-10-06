@@ -9,6 +9,7 @@ from nld.flow.task import (
     DataFlowDependencyGraphTask,
     DataFlowExecutionTask,
     DataFlowInfoTask,
+    DataFlowListTask,
     FlowStateIncrementalComputeTask,
 )
 from nld.flow.task.data_flow_deploy_task import FlowDeployTask
@@ -40,6 +41,21 @@ flow.add_command(state_group)
 def flow_info(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
     """Get data flow information."""
     return execute_task(DataFlowInfoTask)  # type: ignore[no-any-return]
+
+
+@requires_wrapper.nld_command(
+    group=flow,
+    command_name="list",
+    logger_formatter=StandardNldFormatter(),
+    silent_completion=True,
+    with_project=True,
+)
+@params_flow.flow_namespace
+@params_flow.list_incremental_type
+@params.nld_root_folder_path
+def flow_list(ctx: Any, **kwargs: Any) -> tuple[bool, Any]:
+    """List data flows, optionally filtered by --incremental-type."""
+    return execute_task(DataFlowListTask)  # type: ignore[no-any-return]
 
 
 @requires_wrapper.nld_command(
@@ -140,7 +156,7 @@ def flow_execute(
 )
 @params.nld_root_folder_path
 @params_flow.flow_name_optional
-@params_flow.flow_namespace
+@params_flow.deploy_namespace
 @params_flow.deploy_downstream
 @params_flow.deploy_upstream
 @params_flow.deploy_interactive
@@ -165,6 +181,11 @@ def flow_deploy(ctx: Any, **kwargs: Any) -> Any:
     --adopt records the live schema as a flagged baseline first,
     --allow-drift deploys against it anyway, and --rebuild
     recreates the in-scope structures from the assets.
+
+    --namespace deploys one namespace on its own schema: only its
+    flows, structures and change-file directives, under a lock on
+    its targets, so namespaces on distinct schemas deploy in
+    parallel.
     """
     result = execute_task(FlowDeployTask)
     if (

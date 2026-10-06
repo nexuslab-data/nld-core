@@ -11,6 +11,9 @@ from nld.structure.deploy.structure_diff_ddl_statement_builder import (
     DDLStatement,
 )
 from nld.structure.structure.structure import Structure
+from nld.structure.structure.structure_characterisation_def import (
+    StructureCharacterisationDefinitionNames,
+)
 
 
 class RebuildStrategyBuilder:
@@ -74,7 +77,20 @@ class RebuildStrategyBuilder:
         # Constraints are re-added after the swap under their real
         # names: the temporary table must carry none — a field-level
         # unique would otherwise expand under the temporary name and
-        # survive the swap as a stale constraint.
+        # survive the swap as a stale constraint. The exception is the
+        # primary key on an engine that cannot add one to an existing
+        # table (SQLite): there it has to be declared inline, and it
+        # carries no name of its own to leak.
+        inline_characterisations = (
+            []
+            if self._capabilities.alter_add_primary_key
+            else [
+                characterisation
+                for characterisation in structure.characterisations
+                if characterisation.characterisation
+                == StructureCharacterisationDefinitionNames.PRIMARY_KEY
+            ]
+        )
         bare_fields = {
             field_name: field.model_copy(
                 update={
@@ -89,7 +105,7 @@ class RebuildStrategyBuilder:
         }
         bare_structure = structure.model_copy(
             update={
-                "characterisations": [],
+                "characterisations": inline_characterisations,
                 "fields": bare_fields,
                 "name": new_table_name,
             },
@@ -105,29 +121,23 @@ class RebuildStrategyBuilder:
         desired_order = list(desired_fields.keys())
         current_names = {field.name for field in current.get_all_fields()}
         copied_names = [name for name in desired_order if name in current_names]
-        copied_columns = ", ".join(copied_names)
         # The old table's live types can differ from the declared ones
         # (the rebuild often exists to fix exactly that), so every
         # copied column casts explicitly to its target type.
-        select_columns = ", ".join(
+        select_expressions = [
             self._ddl_statement_builder.build_cast_expression(
                 column_name=name,
                 field=desired_fields[name],
             )
             for name in copied_names
-        )
+        ]
         statements.append(
-            DDLStatement(
-                sql=(
-                    f"INSERT INTO {self._deploy_schema}.{new_table_name} "
-                    f"({copied_columns}) SELECT {select_columns} "
-                    f"FROM {self._deploy_schema}.{structure.name}"
-                ),
-                description=(
-                    f"Copy data into the rebuilt {structure.name} "
-                    "in the desired column order, cast to the "
-                    "declared target types"
-                ),
+            self._ddl_statement_builder.build_copy_rows_statement(
+                schema_name=self._deploy_schema,
+                source_table_name=structure.name,
+                target_table_name=new_table_name,
+                column_names=copied_names,
+                select_expressions=select_expressions,
             ),
         )
         # Constraint names follow the table rename but their backing
@@ -148,6 +158,10 @@ class RebuildStrategyBuilder:
                 release_constraint_names=release_constraint_names,
             ),
         )
+        inlined_types = {
+            characterisation.characterisation
+            for characterisation in inline_characterisations
+        }
         constraint_diffs = [
             CharacterisationDiff(
                 action=DiffAction.ADD,
@@ -157,6 +171,7 @@ class RebuildStrategyBuilder:
             )
             for characterisation in structure.get_deployable_characterisations()
             if characterisation.characterisation in comparable_types
+            and characterisation.characterisation not in inlined_types
         ]
         if constraint_diffs:
             statements.extend(

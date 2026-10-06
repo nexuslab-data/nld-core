@@ -65,7 +65,8 @@ class BusinessDictionaryFindTask(StandardTask):
         run_status = BaseRunStatus.SUCCESS.value
 
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.BUSINESS_DICTIONARY]
+            entity_types=[EntityTypeNames.BUSINESS_DICTIONARY],
+            namespace=self.namespace,
         )
         registry = self.execution_context.entity_registry
 

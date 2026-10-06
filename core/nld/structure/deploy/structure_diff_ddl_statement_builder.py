@@ -73,6 +73,38 @@ class BaseStructureDiffDDLStatementBuilder(ABC):
         )
         return f"CAST({self.quote_identifier(column_name)} AS {type_expression})"
 
+    def build_copy_rows_statement(
+        self,
+        schema_name: str,
+        source_table_name: str,
+        target_table_name: str,
+        column_names: list[str],
+        select_expressions: list[str],
+    ) -> DDLStatement:
+        """Generate the INSERT … SELECT that fills a rebuilt table.
+
+        Rendered through the dialect's own object-path and identifier
+        quoting so engines whose object paths are not a plain
+        ``schema.table`` (SQLite resolves every schema to ``main``) copy
+        into a reference the engine accepts.
+        """
+        target_path = self._quote_object_path(schema_name, target_table_name)
+        source_path = self._quote_object_path(schema_name, source_table_name)
+        quoted_columns = ", ".join(
+            self.quote_identifier(column_name) for column_name in column_names
+        )
+        return DDLStatement(
+            sql=(
+                f"INSERT INTO {target_path} ({quoted_columns}) "
+                f"SELECT {', '.join(select_expressions)} FROM {source_path}"
+            ),
+            description=(
+                f"Copy data into the rebuilt {source_table_name} "
+                "in the desired column order, cast to the "
+                "declared target types"
+            ),
+        )
+
     @abstractmethod
     def build_create_table_statements(
         self,

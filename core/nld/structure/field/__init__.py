@@ -22,6 +22,7 @@ from .field_characterisation_definition import (
     FieldCharacterisationDefinitions,
     NamespacedFieldCharacterisationDefinition,
 )
+from .field_data_type import FieldDataType
 from .field_format_adapter import NamespacedFieldFormatAdapter
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "FieldCharacterisationDefinition",
     "FieldCharacterisationDefinitionNames",
     "FieldCharacterisationDefinitions",
+    "FieldDataType",
     "FieldNamingMapping",
     "FieldTemplate",
     "FieldTemplateLineage",
