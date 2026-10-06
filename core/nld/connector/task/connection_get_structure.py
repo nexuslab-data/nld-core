@@ -144,7 +144,10 @@ class ConnectionGetStructureTask(StandardTask):
         Files are organized into folders derived from each structure's
         database and schema (e.g. structure/mydb/public/users.yml).
         """
-        file_output_service = FileOutputService(root_folder_path=".")
+        file_output_service = FileOutputService(
+            root_folder_path=".",
+            entity_layout=self.execution_context.entity_layout,
+        )
 
         for structure in structures:
             resolved_namespace = self._build_structure_namespace(

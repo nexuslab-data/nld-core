@@ -71,3 +71,16 @@ frequency_filter = click.option(
     ),
     help="Only report the flows declaring this intended execution frequency.",
 )
+
+task_name = click.option(
+    "--name",
+    required=True,
+    help="Name of the scheduled flow task",
+)
+
+task_namespace = click.option(
+    "--namespace",
+    required=False,
+    default=None,
+    help="Namespace of the scheduled flow task",
+)

@@ -1,5 +1,5 @@
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from nld.exceptions import MissingEnvironmentVariableException
@@ -60,3 +60,19 @@ def resolve_environment_variables(
             continue
         resolved[declaration.name] = value
     return resolved
+
+
+def read_non_empty_env_var(
+    environ: Mapping[str, str],
+    name: str,
+) -> str | None:
+    """A non-empty, stripped environment value, or None when unset or blank.
+
+    An unseeded secret reaches a process as an empty variable; readers that
+    must treat it as absent go through this helper.
+    """
+    value = environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped if stripped else None

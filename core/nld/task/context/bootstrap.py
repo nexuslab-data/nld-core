@@ -21,6 +21,7 @@ def init_execution_context(
     with_project: bool = True,
     load_entities: bool = True,
     extra_params: dict[str, Any] | None = None,
+    additional_entity_paths: list[str] | None = None,
 ) -> NldExecutionContext:
     """Initialize a ready-to-use NldExecutionContext for an external service.
 
@@ -44,6 +45,10 @@ def init_execution_context(
             returning. Requires ``with_project`` to be True.
         extra_params: Additional task parameters merged into the request, for
             callers needing parameters beyond the two standard folder paths.
+        additional_entity_paths: Extra entity roots appended to the ones
+            declared in ``nld_project.yml``. Filesystem paths, absolute or
+            relative to the project root, and ``pkg://<python_package>/<subdir>``
+            URIs pointing at entities shipped inside an installed package.
 
     Returns:
         An NldExecutionContext set as the current context, with entities loaded
@@ -69,6 +74,7 @@ def init_execution_context(
     context = NldExecutionContext(
         task_request=task_request,
         with_project=with_project,
+        additional_entity_paths=additional_entity_paths,
     )
     context.set_current()
 
@@ -83,6 +89,7 @@ def load_project(
     *,
     entity_types: list[str] | None = None,
     config_folder_path: str | Path | None = None,
+    additional_entity_paths: list[str] | None = None,
 ) -> Project:
     """Load a single nld ``Project`` from a project root.
 
@@ -96,6 +103,8 @@ def load_project(
             entity type is loaded.
         config_folder_path: Path used to resolve connection configs. Defaults to
             ``root_folder_path`` when None.
+        additional_entity_paths: Extra entity roots appended to the ones declared
+            in ``nld_project.yml``.
 
     Returns:
         The loaded ``Project``.
@@ -104,6 +113,7 @@ def load_project(
         root_folder_path=str(root_folder_path),
         config_folder_path=str(config_folder_path or root_folder_path),
         entity_types=entity_types,
+        additional_entity_paths=additional_entity_paths,
     ).project
 
 

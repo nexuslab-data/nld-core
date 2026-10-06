@@ -226,7 +226,10 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
                     else "Statement executed successfully."
                 )
 
-            if expected_output != QueryOutputType.DATASET:
+            # A statement returning no result set is never a read, whatever
+            # its classification: commit it so unclassified DDL cannot keep
+            # its locks until the connection's next commit.
+            if expected_output != QueryOutputType.DATASET or cur.description is None:
                 self.connection.commit()
 
             result = QueryExecResult(
@@ -571,7 +574,7 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             ),
         )
 
-    def create_table(  # type: ignore[override]
+    def create_table(
         self,
         table_path: str,
         structure: Structure,

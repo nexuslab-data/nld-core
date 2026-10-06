@@ -12,8 +12,18 @@ from .audit import (
     StructureAuditValidationFinding,
 )
 from .config import (
-    StructureProjectConfig,
-    StructureProjectMapping,
+    StructureNamespaceConfig,
+    StructureNamespaceMapping,
+)
+from .export import (
+    EXPORT_MODES,
+    MODE_CREATE,
+    MODE_PATCH,
+    MODE_READ,
+    ExportMode,
+    StructureExportError,
+    build_json_schema,
+    build_pydantic_model,
 )
 from .field import (
     CharacterisationValidationFinding,
@@ -22,6 +32,7 @@ from .field import (
     FieldCharacterisationDefinition,
     FieldCharacterisationDefinitionNames,
     FieldCharacterisationDefinitions,
+    FieldDataType,
     FieldTemplate,
     FieldTemplateLineage,
     NamespacedField,
@@ -42,6 +53,7 @@ from .structure import (
     StructureCharacterisation,
     StructureCharacterisationDefinitionNames,
     StructureDefinition,
+    StructureGenerationMetadata,
     StructureNamespace,
     StructureTemplate,
 )
@@ -55,8 +67,12 @@ from .structure_model import (
 )
 
 __all__ = [
+    "EXPORT_MODES",
     "EXTERNAL_SOURCE_TAG",
     "MANAGED_BY_FLOW_EXECUTION_TAG",
+    "MODE_CREATE",
+    "MODE_PATCH",
+    "MODE_READ",
     "AuditColumn",
     "AuditColumnCoverage",
     "AuditDateCoverage",
@@ -66,11 +82,13 @@ __all__ = [
     "AuditSampling",
     "AuditTarget",
     "CharacterisationValidationFinding",
+    "ExportMode",
     "Field",
     "FieldCharacterisation",
     "FieldCharacterisationDefinition",
     "FieldCharacterisationDefinitionNames",
     "FieldCharacterisationDefinitions",
+    "FieldDataType",
     "FieldTemplate",
     "FieldTemplateLineage",
     "NamespacedField",
@@ -90,14 +108,18 @@ __all__ = [
     "StructureCharacterisation",
     "StructureCharacterisationDefinitionNames",
     "StructureDefinition",
+    "StructureExportError",
+    "StructureGenerationMetadata",
     "StructureModel",
     "StructureModelCardinality",
     "StructureModelColumnMapping",
     "StructureModelLink",
     "StructureModelValidationFinding",
     "StructureNamespace",
-    "StructureProjectConfig",
-    "StructureProjectMapping",
+    "StructureNamespaceConfig",
+    "StructureNamespaceMapping",
     "StructureTemplate",
+    "build_json_schema",
+    "build_pydantic_model",
     "resolve_field_characterisation_definitions",
 ]

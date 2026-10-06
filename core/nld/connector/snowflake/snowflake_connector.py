@@ -425,7 +425,7 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
             ),
         )
 
-    def create_table(  # type: ignore[override]
+    def create_table(
         self,
         table_path: str,
         structure: Structure,

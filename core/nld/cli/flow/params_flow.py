@@ -135,6 +135,21 @@ flow_namespace = click.option(
     help="Namespace of the data flow",
 )
 
+deploy_namespace = click.option(
+    "--namespace",
+    required=False,
+    default=None,
+    help=(
+        "Deploy one namespace on its own, when nld_project.yml declares "
+        "it with 'deploy: {unit: true}' or a deploy group: the namespace "
+        "and its descendants mapped to the same connection and schema. "
+        "Descendants mapped elsewhere are left out, a group member "
+        "brings every member, and a target outside the scope refuses "
+        "the deploy. With --name, it only locates the asset. Without "
+        "it, the whole project deploys."
+    ),
+)
+
 full = click.option(
     "--full",
     is_flag=True,
@@ -336,4 +351,12 @@ deploy_interactive = click.option(
         "Prompt the user to confirm before applying any DDL. "
         "--no-interactive skips the prompt — useful in CI pipelines."
     ),
+)
+
+list_incremental_type = click.option(
+    "--incremental-type",
+    "incremental_type",
+    required=False,
+    default=None,
+    help="Keep only the data flows using this incremental type.",
 )

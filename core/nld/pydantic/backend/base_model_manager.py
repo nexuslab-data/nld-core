@@ -105,7 +105,8 @@ class NldBaseModelManager(ABC):
         Subclasses can override ``_TIMESTAMP_COLUMN_TYPE`` and
         ``_TIMESTAMP_DEFAULT`` for dialect-specific defaults and
         ``_create_functional_key_index`` to create indexes after the
-        table is created.
+        table is created. A table that already existed is left as is: its
+        functional key index is not created.
         """
         from nld.structure import StructureCharacterisationDefinitionNames
 
@@ -126,12 +127,18 @@ class NldBaseModelManager(ABC):
             if functional_key:
                 override_primary_key_fields = functional_key.linked_fields
 
-        self.connector.create_table(
+        create_result = self.connector.create_table(
             table_path,
             structure,
             table_exists=table_exists,
             override_primary_key_fields=override_primary_key_fields,
         )
+
+        # The index belongs to the table's creation. On a table that already
+        # existed, even an IF NOT EXISTS index DDL takes a lock blocking every
+        # writer, and backends ensure their tables at every flow start.
+        if create_result is None:
+            return
 
         self._create_functional_key_index(
             structure=structure,

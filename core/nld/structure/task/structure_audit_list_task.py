@@ -32,7 +32,8 @@ class StructureAuditListTask(StandardTask):
         super().__init__(**kwargs)
         self.namespace = namespace
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.STRUCTURE_AUDIT]
+            entity_types=[EntityTypeNames.STRUCTURE_AUDIT],
+            namespace=self.namespace,
         )
 
     def run(self, **kwargs: Any) -> bool:

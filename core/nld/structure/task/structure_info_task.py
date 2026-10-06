@@ -43,7 +43,10 @@ class StructureInfoTask(StandardTask):
         """
         super().__init__(**kwargs)
 
-        self.execution_context.load_entities(entity_types=[EntityTypeNames.STRUCTURE])
+        self.execution_context.load_entities(
+            entity_types=[EntityTypeNames.STRUCTURE],
+            namespace=namespace,
+        )
 
         namespaced_structure = self.execution_context.entity_registry.get_structure(
             entity_key=name,

@@ -7,6 +7,7 @@ import yaml
 from nld.logging import NldLoggable
 from nld.pydantic import (
     NldBaseModel,
+    NldEntityLayout,
     NldEntityReference,
     NldNamedBaseModel,
     NldNamespace,
@@ -16,7 +17,11 @@ from nld.pydantic import (
 )
 
 from .entity_definition import EntityDefinition
-from .exceptions import ObjectReadNoDirectoryException
+from .exceptions import (
+    AmbiguousEntityException,
+    NamespaceFolderConflictException,
+    ObjectReadNoDirectoryException,
+)
 
 
 class EntityProvider(NldLoggable):
@@ -32,6 +37,7 @@ class EntityProvider(NldLoggable):
         super().__init__()
         self._entities_loaded: bool = False
         self._loaded_entity_definition_names: set[str] = set()
+        self._loaded_namespace_scope: NldNamespace | None = None
         self.entity_definitions: list[EntityDefinition] = entity_definitions
         self.entities: dict[str, dict[NldNamespace, dict[str, NldBaseModel]]] = {}
 
@@ -65,6 +71,151 @@ class EntityProvider(NldLoggable):
             if entity_def.name == entity_name
         ]
         return matching_definitions[0] if len(matching_definitions) > 0 else None
+
+    def allows_same_name_across_namespaces(self, entity_type: str) -> bool:
+        """Check if entities of this type may share a name across namespaces."""
+        entity_definition = self.get_entity_definition(entity_name=entity_type)
+        return (
+            entity_definition is not None
+            and entity_definition.allow_same_name_across_namespaces
+        )
+
+    def _get_entity_label(self, entity_type: str) -> str:
+        """Get the display name of an entity type for messages."""
+        entity_definition = self.get_entity_definition(entity_name=entity_type)
+        if entity_definition is not None and entity_definition.display_name:
+            return entity_definition.display_name
+        return entity_type
+
+    def _get_search_priority(
+        self,
+        entity_type: str,
+        use_search_direction: bool,
+    ) -> Literal["root", "deepest"]:
+        """Get the namespace priority used to pick one of several entities."""
+        if use_search_direction:
+            entity_definition = self.get_entity_definition(entity_name=entity_type)
+            if (
+                entity_definition is not None
+                and entity_definition.search_direction == "parents"
+            ):
+                return "deepest"
+        return "root"
+
+    def _find_entity_wrappers(
+        self,
+        entity_type: str,
+        entity_key: str,
+        all_entities: dict[str, list[NldNamespacedBaseModelWrapper[Any]]],
+    ) -> list[NldNamespacedBaseModelWrapper[Any]]:
+        """
+        Find the entity wrappers matching a bare or namespace-qualified key.
+
+        Entity types allowing the same name across namespaces also accept the
+        qualified key ``<namespace>.<name>`` returned by their bulk accessors,
+        which matches only the copy stored in that exact namespace.
+
+        Example:
+            >>> provider._find_entity_wrappers("structure", "sales.customer", all)
+            [<wrapper customer in namespace sales>]
+        """
+        if entity_key in all_entities:
+            return all_entities[entity_key]
+        if (
+            not self.allows_same_name_across_namespaces(entity_type=entity_type)
+            or "." not in entity_key
+        ):
+            return []
+        namespace, _, entity_name = entity_key.rpartition(".")
+        return [
+            wrapper
+            for wrapper in all_entities.get(entity_name, [])
+            if wrapper.namespace == NldNamespace(namespace)
+        ]
+
+    def _select_entities(
+        self,
+        entity_type: str,
+        all_entities: dict[str, list[NldNamespacedBaseModelWrapper[Any]]],
+        entity_keys: list[str] | None,
+        priority: Literal["root", "deepest"],
+    ) -> dict[str, NldNamespacedBaseModelWrapper[Any]]:
+        """
+        Select the visible entities, keyed for bulk accessors.
+
+        Entity types allowing the same name across namespaces keep every copy.
+        A name held by a single copy stays keyed by its bare name, so projects
+        without duplicates see no change. A name held by several copies is
+        keyed by each copy's qualified id instead.
+
+        Other entity types keep a single copy per name chosen by priority.
+
+        Example:
+            >>> # "customer" in "sales" and "marketing", "order" in root only
+            >>> list(provider._select_entities("structure", all, None, "root"))
+            ["marketing.customer", "sales.customer", "order"]
+        """
+        keep_all = self.allows_same_name_across_namespaces(entity_type=entity_type)
+        keys_to_retrieve = (
+            entity_keys if entity_keys is not None else list(all_entities.keys())
+        )
+
+        result: dict[str, NldNamespacedBaseModelWrapper[Any]] = {}
+        for key in keys_to_retrieve:
+            wrappers = self._find_entity_wrappers(
+                entity_type=entity_type,
+                entity_key=key,
+                all_entities=all_entities,
+            )
+            if not wrappers:
+                continue
+            if not keep_all:
+                result[key] = select_by_namespace_priority(
+                    entities=wrappers,
+                    priority=priority,
+                )
+            elif len(wrappers) == 1:
+                result[key] = wrappers[0]
+            else:
+                for wrapper in sorted(wrappers, key=lambda item: str(item.namespace)):
+                    result[wrapper.id] = wrapper
+        return result
+
+    def _merge_namespace_entities(
+        self,
+        entity_type: str,
+        namespaces: list[NldNamespace],
+    ) -> dict[str, Any]:
+        """
+        Merge the entities stored in the given namespaces into one dictionary.
+
+        Later namespaces override earlier ones, except for entity types
+        allowing the same name across namespaces, which keep every copy keyed
+        like ``_select_entities`` does.
+        """
+        if self.allows_same_name_across_namespaces(entity_type=entity_type):
+            grouped: dict[str, list[NldNamespacedBaseModelWrapper[Any]]] = {}
+            for namespace in namespaces:
+                for key, model in self.entities[entity_type].get(namespace, {}).items():
+                    grouped.setdefault(key, []).append(
+                        NldNamespacedBaseModelWrapper(
+                            model=model,
+                            namespace=namespace,
+                        )
+                    )
+            selected = self._select_entities(
+                entity_type=entity_type,
+                all_entities=grouped,
+                entity_keys=None,
+                priority="root",
+            )
+            return {key: wrapper.model for key, wrapper in selected.items()}
+
+        merged_entities: dict[str, Any] = {}
+        for namespace in namespaces:
+            if namespace in self.entities[entity_type]:
+                merged_entities.update(self.entities[entity_type][namespace])
+        return merged_entities
 
     def resolve_entity_definitions(
         self,
@@ -507,13 +658,10 @@ class EntityProvider(NldLoggable):
                 descendants = self._get_namespace_descendants(
                     entity_type=entity_type, namespace=normalized_namespace
                 )
-                merged_entities: dict[str, Any] = {}
-
-                for descendant_namespace in descendants:
-                    if descendant_namespace in self.entities[entity_type]:
-                        merged_entities.update(
-                            self.entities[entity_type][descendant_namespace]
-                        )
+                merged_entities = self._merge_namespace_entities(
+                    entity_type=entity_type,
+                    namespaces=descendants,
+                )
 
                 if merged_entities:
                     result[entity_type] = merged_entities
@@ -576,10 +724,10 @@ class EntityProvider(NldLoggable):
                     namespace=normalized_namespace,
                 )
 
-            merged_entities: dict[str, Any] = {}
-            for ns in namespaces_to_search:
-                if ns in self.entities[entity_type]:
-                    merged_entities.update(self.entities[entity_type][ns])
+            merged_entities = self._merge_namespace_entities(
+                entity_type=entity_type,
+                namespaces=namespaces_to_search,
+            )
 
             if merged_entities:
                 result[entity_type] = merged_entities
@@ -717,7 +865,16 @@ class EntityProvider(NldLoggable):
             include_children=include_children,
             use_search_direction=use_search_direction,
         )
-        return list(all_entities.keys())
+        selected = self._select_entities(
+            entity_type=entity_type,
+            all_entities=all_entities,
+            entity_keys=None,
+            priority=self._get_search_priority(
+                entity_type=entity_type,
+                use_search_direction=use_search_direction,
+            ),
+        )
+        return list(selected.keys())
 
     def list_entity_keys(
         self,
@@ -761,6 +918,11 @@ class EntityProvider(NldLoggable):
         - For children search: returns entity closest to root
         - For parents search: returns entity closest to current namespace
 
+        Entity types allowing the same name across namespaces never pick a
+        winner by priority: the copy stored in the requested namespace is
+        returned, else the single visible copy, else the lookup is rejected
+        as ambiguous. They also accept a ``<namespace>.<name>`` key.
+
         Args:
             entity_type: The type of entity
             entity_key: The name/key of the entity
@@ -777,6 +939,7 @@ class EntityProvider(NldLoggable):
         Raises:
             ValueError: If entity_type is not found
             RuntimeError: If entity_key is not found in the namespace
+            AmbiguousEntityException: If several same-name copies match
         """
         if (
             entity_type not in self.entities.keys()
@@ -793,35 +956,61 @@ class EntityProvider(NldLoggable):
             use_search_direction=use_search_direction,
         )
 
-        if entity_key not in all_entities:
-            entity_definition = self.get_entity_definition(
-                entity_name=entity_type,
-            )
-            entity_label = (
-                entity_definition.display_name
-                if entity_definition is not None
-                and entity_definition.display_name is not None
-                else entity_type
-            )
+        entity_wrappers = self._find_entity_wrappers(
+            entity_type=entity_type,
+            entity_key=entity_key,
+            all_entities=all_entities,
+        )
+        if not entity_wrappers:
             raise RuntimeError(
-                f"No {entity_label} with key {entity_key} "
-                f"for namespace {normalized_namespace} is available."
+                f"No {self._get_entity_label(entity_type=entity_type)} with key "
+                f"{entity_key} for namespace {normalized_namespace} is available."
             )
 
-        entity_wrappers = all_entities[entity_key]
-
-        priority: Literal["root", "deepest"] = "root"
-        if use_search_direction:
-            entity_definition = self.get_entity_definition(entity_name=entity_type)
-            if (
-                entity_definition is not None
-                and entity_definition.search_direction == "parents"
-            ):
-                priority = "deepest"
+        if self.allows_same_name_across_namespaces(entity_type=entity_type):
+            return self._select_single_same_name_entity(
+                entity_type=entity_type,
+                entity_key=entity_key,
+                namespace=normalized_namespace,
+                entity_wrappers=entity_wrappers,
+            )
 
         return select_by_namespace_priority(
             entities=entity_wrappers,
-            priority=priority,
+            priority=self._get_search_priority(
+                entity_type=entity_type,
+                use_search_direction=use_search_direction,
+            ),
+        )
+
+    def _select_single_same_name_entity(
+        self,
+        entity_type: str,
+        entity_key: str,
+        namespace: NldNamespace,
+        entity_wrappers: list[NldNamespacedBaseModelWrapper[Any]],
+    ) -> NldNamespacedBaseModelWrapper[Any]:
+        """
+        Pick the one entity a lookup designates among same-name copies.
+
+        A single visible copy is returned as is. Otherwise the copy stored in
+        the requested namespace itself wins, since the caller pointed at it
+        explicitly. Any other combination is rejected as ambiguous.
+
+        Raises:
+            AmbiguousEntityException: If several copies match and none is
+                stored in the requested namespace.
+        """
+        if len(entity_wrappers) == 1:
+            return entity_wrappers[0]
+        for wrapper in entity_wrappers:
+            if wrapper.namespace == namespace:
+                return wrapper
+        raise AmbiguousEntityException(
+            entity_label=self._get_entity_label(entity_type=entity_type),
+            entity_key=entity_key,
+            namespace=str(namespace),
+            candidate_ids=sorted(wrapper.id for wrapper in entity_wrappers),
         )
 
     def get_entities(
@@ -868,29 +1057,16 @@ class EntityProvider(NldLoggable):
             use_search_direction=use_search_direction,
         )
 
-        keys_to_retrieve = (
-            entity_keys if entity_keys is not None else list(all_entities.keys())
+        selected = self._select_entities(
+            entity_type=entity_type,
+            all_entities=all_entities,
+            entity_keys=entity_keys,
+            priority=self._get_search_priority(
+                entity_type=entity_type,
+                use_search_direction=use_search_direction,
+            ),
         )
-
-        priority: Literal["root", "deepest"] = "root"
-        if use_search_direction:
-            entity_definition = self.get_entity_definition(entity_name=entity_type)
-            if (
-                entity_definition is not None
-                and entity_definition.search_direction == "parents"
-            ):
-                priority = "deepest"
-
-        result: list[NldNamespacedBaseModelWrapper[Any]] = []
-        for key in keys_to_retrieve:
-            if key in all_entities:
-                selected = select_by_namespace_priority(
-                    entities=all_entities[key],
-                    priority=priority,
-                )
-                result.append(selected)
-
-        return result
+        return list(selected.values())
 
     def get_entities_as_dict(
         self,
@@ -936,28 +1112,15 @@ class EntityProvider(NldLoggable):
             use_search_direction=use_search_direction,
         )
 
-        keys_to_retrieve = (
-            entity_keys if entity_keys is not None else list(all_entities.keys())
+        return self._select_entities(
+            entity_type=entity_type,
+            all_entities=all_entities,
+            entity_keys=entity_keys,
+            priority=self._get_search_priority(
+                entity_type=entity_type,
+                use_search_direction=use_search_direction,
+            ),
         )
-
-        priority: Literal["root", "deepest"] = "root"
-        if use_search_direction:
-            entity_definition = self.get_entity_definition(entity_name=entity_type)
-            if (
-                entity_definition is not None
-                and entity_definition.search_direction == "parents"
-            ):
-                priority = "deepest"
-
-        result: dict[str, NldNamespacedBaseModelWrapper[Any]] = {}
-        for key in keys_to_retrieve:
-            if key in all_entities:
-                result[key] = select_by_namespace_priority(
-                    entities=all_entities[key],
-                    priority=priority,
-                )
-
-        return result
 
     def get_entities_on_namespace(
         self,
@@ -1005,12 +1168,17 @@ class EntityProvider(NldLoggable):
         fail_on_missing_folder: bool = False,
         force_reload: bool = False,
         requested_entity_definitions: list[EntityDefinition] | None = None,
+        additional_root_directories: list[str] | None = None,
+        entity_layout: NldEntityLayout | None = None,
+        namespace: str | None = None,
     ) -> None:
         """
         Load all entities from the root directory.
 
         Recursively loads entities from each entity type's folder and subdirectories.
         Subdirectories automatically become namespaces based on their relative paths.
+        With an ``entity_layout`` declaring namespace folders, each namespace folder
+        is scanned as well (see ``NldEntityLayout``).
 
         When ``requested_entity_definitions`` is provided, only those definitions and
         their transitively required dependencies are loaded, so a caller that only
@@ -1018,12 +1186,32 @@ class EntityProvider(NldLoggable):
         incremental: already-loaded definitions are skipped, so successive calls with
         different requested sets accumulate without reloading or dropping entities.
 
+        When ``namespace`` is provided, only the namespaces related to it are
+        loaded: its ancestors, which it inherits from, itself and its
+        descendants. Namespace folders outside that lineage are not scanned at
+        all. The scope applies to every entity type loaded by the provider, so
+        a call with a different scope than the previous one reloads from
+        scratch instead of mixing two scopes in one registry.
+
+        Additional root directories carry entities shipped outside the project,
+        typically inside an installed Python package. They are loaded first, in
+        declaration order, and ``root_directory`` is loaded last, so a project
+        entity always overrides a packaged entity with the same key in the same
+        namespace. A missing entity folder in an additional root is never an
+        error: a package normally ships only a couple of entity types. They are
+        always read type first: namespace folders belong to the project.
+
         Args:
             root_directory: Base directory containing entity folders
             fail_on_missing_folder: Raise exception if folder doesn't exist
             force_reload: Force reload even if entities were already loaded
             requested_entity_definitions: Restrict loading to these definitions and
                 their required dependencies; load everything when None
+            additional_root_directories: Extra base directories loaded before
+                ``root_directory``, lowest precedence first
+            entity_layout: Layout of ``root_directory``; type first when None
+            namespace: Restrict loading to this namespace lineage; load every
+                namespace when None or root
 
         Example:
             Given structure:
@@ -1038,6 +1226,16 @@ class EntityProvider(NldLoggable):
             Loads flow1 and org1 into namespace ".",
             and flow2 into namespace "source/product1"
         """
+        namespace_scope = (
+            None
+            if namespace is None or NldNamespace(namespace).is_root
+            else NldNamespace(namespace)
+        )
+        if namespace_scope != self._loaded_namespace_scope:
+            self.entities = {}
+            self._loaded_entity_definition_names = set()
+            self._loaded_namespace_scope = namespace_scope
+
         if force_reload:
             self._loaded_entity_definition_names = set()
 
@@ -1051,10 +1249,19 @@ class EntityProvider(NldLoggable):
         for entity_definition in entity_definitions_to_load:
             if entity_definition.name in self._loaded_entity_definition_names:
                 continue
+            for additional_root_directory in additional_root_directories or []:
+                self.load_from_entity_definition(
+                    root_directory=additional_root_directory,
+                    entity_definition=entity_definition,
+                    fail_on_missing_folder=False,
+                    namespace_scope=namespace_scope,
+                )
             self.load_from_entity_definition(
                 root_directory=root_directory,
                 entity_definition=entity_definition,
                 fail_on_missing_folder=fail_on_missing_folder,
+                entity_layout=entity_layout,
+                namespace_scope=namespace_scope,
             )
             self._loaded_entity_definition_names.add(entity_definition.name)
 
@@ -1067,26 +1274,41 @@ class EntityProvider(NldLoggable):
         root_directory: str,
         entity_definition: EntityDefinition,
         fail_on_missing_folder: bool,
+        entity_layout: NldEntityLayout | None = None,
+        namespace_scope: NldNamespace | None = None,
     ) -> None:
         """
         Load entities from a specific entity definition.
 
         Recursively loads entities from the entity folder and all subdirectories.
-        Each subdirectory becomes a namespace based on its relative path.
+        Each subdirectory becomes a namespace based on its relative path. With an
+        ``entity_layout`` declaring namespace folders, the entity folder of each
+        namespace folder is loaded too, its namespaces extending the folder one.
 
         Args:
             root_directory: Base directory containing entity folders
             entity_definition: Definition of the entity type to load
-            fail_on_missing_folder: Raise exception if folder doesn't exist
+            fail_on_missing_folder: Raise exception if no entity folder exists
+            entity_layout: Layout of ``root_directory``; type first when None
+            namespace_scope: Only load namespaces related to this one; load
+                every namespace when None
+
+        Raises:
+            NamespaceFolderConflictException: If a namespace is found outside
+                the location owning it, e.g. type first while declared as a
+                namespace folder.
 
         Example:
             Given structure:
                 root/flows/
                     flow1.yml           -> namespace "."
                     source/product1/
-                        flow2.yml       -> namespace "source/product1"
+                        flow2.yml       -> namespace "source.product1"
+                root/web/flows/         (with "web" declared as a namespace folder)
+                    raw/flow3.yml       -> namespace "web.raw"
 
-            Loads flow1 into namespace "." and flow2 into namespace "source/product1"
+            Loads flow1 into namespace ".", flow2 into namespace "source.product1"
+            and flow3 into namespace "web.raw"
         """
         from nld.service.model_read_util import (
             read_entities_from_yaml_file_list,
@@ -1098,12 +1320,23 @@ class EntityProvider(NldLoggable):
         from nld.utils.jinja_utils import JINJA2_FILE_STANDARD_REGEX
         from nld.utils.yaml_util import YAML_FILE_STANDARD_REGEX
 
-        entity_folder_path = os.path.join(root_directory, entity_definition.folder_name)
+        layout = entity_layout if entity_layout is not None else NldEntityLayout()
+        existing_folder_roots = [
+            (folder_path, folder_namespace)
+            for folder_path, folder_namespace in layout.get_entity_folder_roots(
+                entities_root_folder_path=root_directory,
+                entity_folder_name=entity_definition.folder_name,
+            )
+            if os.path.exists(folder_path)
+        ]
 
-        if not os.path.exists(entity_folder_path):
+        if not existing_folder_roots:
             if fail_on_missing_folder:
                 raise ObjectReadNoDirectoryException(
-                    folder_path=entity_folder_path,
+                    folder_path=os.path.join(
+                        root_directory,
+                        entity_definition.folder_name,
+                    ),
                     data_class=entity_definition.model_type,
                 )
             else:
@@ -1120,33 +1353,61 @@ class EntityProvider(NldLoggable):
             else JINJA2_FILE_STANDARD_REGEX
         )
 
-        files_by_namespace = get_files_grouped_by_subdirectory(
-            root_path=entity_folder_path,
-            pattern=pattern,
-        )
+        for folder_path, folder_namespace in existing_folder_roots:
+            if namespace_scope is not None and folder_namespace is not None:
+                if not folder_namespace.is_related_to(namespace_scope):
+                    continue
 
-        for namespace, file_paths in files_by_namespace.items():
-            entity_dict_for_resolution = self.get_entity_dict_for_resolution(
-                namespace=namespace,
+            base_namespace = (
+                folder_namespace
+                if folder_namespace is not None
+                else NldNamespace(NldNamespace.ROOT_VALUE)
+            )
+            files_by_relative_namespace = get_files_grouped_by_subdirectory(
+                root_path=folder_path,
+                pattern=pattern,
             )
 
-            with ResolutionContext.with_registry(obj_dict=entity_dict_for_resolution):
-                if entity_definition.file_format == "yaml":
-                    loaded: dict[str, Any] = read_entities_from_yaml_file_list(
-                        base_model_type=entity_definition.model_type,
-                        file_paths=file_paths,
+            for relative_namespace, file_paths in files_by_relative_namespace.items():
+                namespace = base_namespace.append(relative_namespace)
+                if layout.get_owning_folder_namespace(namespace) != folder_namespace:
+                    raise NamespaceFolderConflictException(
+                        namespace=namespace,
+                        found_directory=os.path.dirname(file_paths[0]),
+                        expected_directory=layout.get_entity_directory(
+                            entities_root_folder_path=root_directory,
+                            entity_folder_name=entity_definition.folder_name,
+                            namespace=namespace,
+                        ),
                     )
-                else:
-                    loaded = read_files_from_file_list(
-                        data_class=entity_definition.model_type,
-                        file_paths=file_paths,
-                    )
+                if namespace_scope is not None and not namespace.is_related_to(
+                    namespace_scope,
+                ):
+                    continue
 
-                self.replace_entity_type_entities(
-                    key=entity_definition.name,
-                    entity_dict=loaded,
+                entity_dict_for_resolution = self.get_entity_dict_for_resolution(
                     namespace=namespace,
                 )
+
+                with ResolutionContext.with_registry(
+                    obj_dict=entity_dict_for_resolution,
+                ):
+                    if entity_definition.file_format == "yaml":
+                        loaded: dict[str, Any] = read_entities_from_yaml_file_list(
+                            base_model_type=entity_definition.model_type,
+                            file_paths=file_paths,
+                        )
+                    else:
+                        loaded = read_files_from_file_list(
+                            data_class=entity_definition.model_type,
+                            file_paths=file_paths,
+                        )
+
+                    self.replace_entity_type_entities(
+                        key=entity_definition.name,
+                        entity_dict=loaded,
+                        namespace=namespace,
+                    )
 
     def write_entity(
         self,
@@ -1155,6 +1416,7 @@ class EntityProvider(NldLoggable):
         root_directory: str,
         exclude_none: bool = False,
         sort_keys: bool = False,
+        entity_layout: NldEntityLayout | None = None,
     ) -> Path:
         """
         Write NldNamespacedBaseModelWrapper to a file.
@@ -1169,6 +1431,7 @@ class EntityProvider(NldLoggable):
             root_directory: Base directory where entities are stored
             exclude_none: Whether to exclude fields with None values
             sort_keys: Whether to sort keys alphabetically
+            entity_layout: Layout of ``root_directory``; type first when None
 
         Returns:
             Path to the written file
@@ -1207,10 +1470,14 @@ class EntityProvider(NldLoggable):
                 f"Got: {type(wrapper.model).__name__}"
             )
 
-        target_dir = Path(root_directory) / entity_definition.folder_name
-        namespace_path = NldNamespace(wrapper.namespace).to_path(separator="/")
-        if namespace_path:
-            target_dir = target_dir / namespace_path
+        layout = entity_layout if entity_layout is not None else NldEntityLayout()
+        target_dir = Path(
+            layout.get_entity_directory(
+                entities_root_folder_path=root_directory,
+                entity_folder_name=entity_definition.folder_name,
+                namespace=wrapper.namespace,
+            ),
+        )
 
         if not target_dir.exists():
             raise ObjectReadNoDirectoryException(

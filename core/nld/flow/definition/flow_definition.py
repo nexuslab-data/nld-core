@@ -17,7 +17,9 @@ from nld.flow.quality.service import validate_quality_checks
 from nld.misc import EnvironmentVariableDefinition
 from nld.parameters import ExecutionParameter, create_model_dict
 from nld.pydantic import (
+    FLOWS_FOLDER_NAME,
     NldBaseModel,
+    NldEntityLayout,
     NldEntityReference,
     NldNamedBaseModel,
     NldNamespace,
@@ -101,9 +103,10 @@ class DataFlowDefinition(NldNamedBaseModel):
         - Parameters will be split between init and run based on the task's
           init_params and run_params declarations
 
-    When task is not provided, it will be auto-resolved using the path:
-    <entity_path>.flows.<namespace>.<flow_name> and searching for a
-    DataFlowTask subclass in that module.
+    When task is not provided, it will be auto-resolved from the Python module
+    stored next to the flow YAML, <entity_path>.flows.<namespace>.<flow_name>
+    (or its namespace folder equivalent, see NldEntityLayout.get_module_path),
+    and searching for a DataFlowTask subclass in that module.
 
     Before using methods that require the task class (get_init_params_keys,
     get_params_model_dict_for_init, etc.), you must call load_task_module()
@@ -337,7 +340,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     def check_coherence(
         self,
         namespace: str | None = None,
-        entity_path: str | None = None,
+        entity_layout: NldEntityLayout | None = None,
         additional_task_paths: list[str] | None = None,
         additional_flow_task_types: dict[str, str] | None = None,
     ) -> tuple[bool, list[str]]:
@@ -350,7 +353,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         Args:
             namespace: The namespace of the data flow
-            entity_path: The entity path from project
+            entity_layout: The entity layout of the project
             additional_task_paths: Optional additional paths for module loading
             additional_flow_task_types: User-configured task type mappings
 
@@ -361,7 +364,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         if not self._check_task_module(
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
             errors=errors,
@@ -371,7 +374,7 @@ class DataFlowDefinition(NldNamedBaseModel):
         # Load the task module for use by other methods
         self.load_task_module(
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )
@@ -412,7 +415,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     def _resolve_task_module_path(
         self,
         namespace: str | None = None,
-        entity_path: str | None = None,
+        entity_layout: NldEntityLayout | None = None,
         additional_flow_task_types: dict[str, str] | None = None,
     ) -> str:
         """
@@ -426,7 +429,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         Args:
             namespace: The namespace of the data flow
-            entity_path: The entity path from project configuration
+            entity_layout: The entity layout of the project
             additional_flow_task_types: User-configured task type mappings
 
         Returns:
@@ -463,29 +466,17 @@ class DataFlowDefinition(NldNamedBaseModel):
                 f"namespace is required when task is not specified"
             )
 
-        # Build the module path: <entity_path>.flows.<namespace>.<flow_name>
-        path_parts = []
-
-        # Add entity_path if provided and not root
-        if entity_path is not None and not NldNamespace(entity_path).is_root:
-            path_parts.append(entity_path.replace("/", ".").replace("\\", "."))
-
-        # Add 'flows' directory
-        path_parts.append("flows")
-
-        # Add namespace if not root
-        if not NldNamespace(namespace).is_root:
-            path_parts.append(namespace)
-
-        # Add flow name
-        path_parts.append(self.name)
-
-        return ".".join(path_parts)
+        layout = entity_layout if entity_layout is not None else NldEntityLayout()
+        return layout.get_module_path(
+            entity_folder_name=FLOWS_FOLDER_NAME,
+            namespace=namespace,
+            module_name=self.name,
+        )
 
     def resolve_task_module(
         self,
         namespace: str | None = None,
-        entity_path: str | None = None,
+        entity_layout: NldEntityLayout | None = None,
         additional_task_paths: list[str] | None = None,
         additional_flow_task_types: dict[str, str] | None = None,
     ) -> tuple[ModuleType, type["DataFlowTask"]]:
@@ -499,7 +490,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         Args:
             namespace: The namespace of the data flow
-            entity_path: The entity path from project
+            entity_layout: The entity layout of the project
             additional_task_paths: Optional additional paths for module loading
             additional_flow_task_types: User-configured task type mappings
 
@@ -538,7 +529,7 @@ class DataFlowDefinition(NldNamedBaseModel):
         # Auto-resolve task from namespace and flow name
         module_path = self._resolve_task_module_path(
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
         )
 
         loader = ModuleLoader(additional_paths=additional_task_paths or [])
@@ -573,7 +564,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     def load_task_module(
         self,
         namespace: str | None = None,
-        entity_path: str | None = None,
+        entity_layout: NldEntityLayout | None = None,
         additional_task_paths: list[str] | None = None,
         additional_flow_task_types: dict[str, str] | None = None,
     ) -> None:
@@ -586,13 +577,13 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         Args:
             namespace: The namespace of the data flow
-            entity_path: The entity path from project
+            entity_layout: The entity layout of the project
             additional_task_paths: Optional list of additional paths for module loading
             additional_flow_task_types: User-configured task type mappings
         """
         self._task_module = self.resolve_task_module(
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )
@@ -629,7 +620,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     def _check_task_module(
         self,
         namespace: str | None,
-        entity_path: str | None,
+        entity_layout: NldEntityLayout | None,
         additional_task_paths: list[str] | None,
         additional_flow_task_types: dict[str, str] | None,
         errors: list[str],
@@ -639,7 +630,7 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         Args:
             namespace: The namespace of the data flow
-            entity_path: The entity path from project
+            entity_layout: The entity layout of the project
             additional_task_paths: Optional additional paths for module loading
             additional_flow_task_types: User-configured task type mappings
             errors: List to append error messages to
@@ -650,7 +641,7 @@ class DataFlowDefinition(NldNamedBaseModel):
         try:
             self.resolve_task_module(
                 namespace=namespace,
-                entity_path=entity_path,
+                entity_layout=entity_layout,
                 additional_task_paths=additional_task_paths,
                 additional_flow_task_types=additional_flow_task_types,
             )

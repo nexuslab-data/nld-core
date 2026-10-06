@@ -41,7 +41,8 @@ class DataFlowInfoTask(StandardTask):
         super().__init__(**kwargs)
 
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION]
+            entity_types=[EntityTypeNames.DATA_FLOW_DEFINITION],
+            namespace=namespace,
         )
 
         namespaced_data_flow_definition = (
@@ -56,7 +57,7 @@ class DataFlowInfoTask(StandardTask):
         # Load task module for later use
         self.data_flow_definition.load_task_module(
             namespace=self.flow_namespace,
-            entity_path=self._entity_path,
+            entity_layout=self.execution_context.project.entity_layout,
             additional_task_paths=self._additional_task_paths,
             additional_flow_task_types=self._additional_flow_task_types,
         )
@@ -78,10 +79,6 @@ class DataFlowInfoTask(StandardTask):
     @property
     def _additional_flow_task_types(self) -> dict[str, str]:
         return self.execution_context.project.flow_config.additional_flow_task_types
-
-    @property
-    def _entity_path(self) -> str:
-        return self.execution_context.project.entity_path
 
     def _display_flow_header(self) -> None:
         """Display data flow header information."""

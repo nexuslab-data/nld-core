@@ -3,6 +3,7 @@ _CONNECTOR_TYPE_TO_SQLGLOT_DIALECT: dict[str, str] = {
     "duckdb": "duckdb",
     "postgresql": "postgres",
     "snowflake": "snowflake",
+    "sqlite": "sqlite",
 }
 
 

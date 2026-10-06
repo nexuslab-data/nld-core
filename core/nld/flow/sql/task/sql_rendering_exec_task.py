@@ -96,7 +96,7 @@ class SQLRenderingExecutionTask(StandardTask):
             try:
                 _, task_class = namespaced_flow.model.resolve_task_module(
                     namespace=str(namespaced_flow.namespace),
-                    entity_path=project.entity_path,
+                    entity_layout=project.entity_layout,
                     additional_task_paths=project.flows_python_additional_paths,
                     additional_flow_task_types=project.flow_config.additional_flow_task_types,
                 )

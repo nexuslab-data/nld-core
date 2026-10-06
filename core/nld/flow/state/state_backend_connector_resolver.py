@@ -60,13 +60,11 @@ def build_effective_state_backend_connector_config_wrapper(
     flow_state_backend_connector_config_wrapper = (
         data_flow_definition.state_backend_connector
     )
-    flow_config = getattr(execution_context.project, "flow_config", None)
+    flow_namespace_config = execution_context.project.flow_namespace_config
     project_default_state_backend_connector_config_wrapper = (
-        flow_config.get_default_state_backend_connector(
+        flow_namespace_config.get_default_state_backend_connector(
             namespace=flow_namespace,
         )
-        if flow_config is not None
-        else None
     )
     return merge_state_backend_connector_config_wrappers(
         flow_state_backend_connector_config_wrapper=(

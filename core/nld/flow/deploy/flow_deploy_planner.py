@@ -2,6 +2,14 @@ import uuid
 from typing import Any, ClassVar, cast
 
 from nld.connector.base.connector import SQLDataConnector
+from nld.deploy import (
+    NamespaceDeployScope,
+    NamespaceDeployScopeError,
+    resolve_deploy_target,
+    resolve_lock_keys,
+    resolve_namespace_deploy_scope,
+    scope_pending_change_files,
+)
 from nld.deploy.change_file_loader import (
     ChangeFileError,
     get_flow_renames,
@@ -39,10 +47,11 @@ from nld.flow.graph.data_flow_graph import (
     strip_node_type_prefix,
 )
 from nld.flow.graph.scoped_data_flow_graph import ScopedDataFlowGraph
+from nld.flow.structure_generation import TargetStructureGenerator
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
-from nld.pydantic import NldNamespace
-from nld.pydantic.namespace import build_entity_key
+from nld.pydantic import NldEntityLayout, NldNamespace, build_entity_key
 from nld.service import EntityTypeNames
+from nld.structure import NamespacedStructure
 from nld.structure.deploy import StructureMetadataBackendManager
 from nld.structure.deploy.deploy_target_factory import StructureDeployTargetFactory
 from nld.structure.deploy.structure_change import (
@@ -191,14 +200,9 @@ class FlowDeployPlanner(StandardTask):
 
     def run(self, **kwargs: Any) -> FlowChangeSet:
         """Compute the in-memory change set for the resolved scope."""
-        registry = self.execution_context.entity_registry
-
-        # --- Step 1: Build the full flow graph and resolve scope
-        all_flows: dict[str, NamespacedDataFlowDefinition] = (
-            registry.get_data_flow_definition_dict(
-                namespace=self._namespace,
-            )
-        )
+        # --- Step 1: Build the scope's flow graph and resolve the flows
+        deploy_scope = self._resolve_deploy_scope()
+        all_flows = self._load_flows_in_scope(deploy_scope=deploy_scope)
         graph = DataFlowGraph(flow_dict=all_flows)
         scoped_flow_id_set = self._resolve_scoped_flow_ids(
             graph=graph,
@@ -212,6 +216,14 @@ class FlowDeployPlanner(StandardTask):
         sorted_flow_ids = [
             fid for fid in scoped_graph.topological_sort() if fid in scoped_flow_id_set
         ]
+        if deploy_scope is not None:
+            self._check_targets_in_scope(
+                scoped_flows={
+                    flow_id: scoped_graph.get_flow(flow_id=flow_id)
+                    for flow_id in sorted_flow_ids
+                },
+                deploy_scope=deploy_scope,
+            )
 
         # --- Step 3: Load previously deployed metadata + pending change files
         self._metadata_manager.ensure_metadata_tables(
@@ -224,9 +236,13 @@ class FlowDeployPlanner(StandardTask):
         )
         previously_deployed = self._metadata_manager.get_all_deployed_flows(
             metadata_schema=self._metadata_schema,
-            namespace=self._namespace,
+            is_namespace_in_scope=(
+                None if deploy_scope is None else deploy_scope.contains
+            ),
         )
-        pending_change_files = self._load_pending_change_files()
+        pending_change_files = self._load_pending_change_files(
+            deploy_scope=deploy_scope,
+        )
         self._remap_renamed_flows(
             previously_deployed=previously_deployed,
             pending_change_files=pending_change_files,
@@ -238,7 +254,7 @@ class FlowDeployPlanner(StandardTask):
         # --- Step 4: Build entries for each flow
         entries: list[FlowChangeEntry] = []
         entities_root = self.execution_context.project.entities_root_folder_path
-        entity_path = self.execution_context.project.entity_path
+        entity_layout = self.execution_context.project.entity_layout
         additional_flow_task_types = (
             self.execution_context.project.flow_config.additional_flow_task_types
         )
@@ -252,7 +268,7 @@ class FlowDeployPlanner(StandardTask):
                 namespaced_flow=namespaced_flow,
                 previously_deployed=previously_deployed,
                 entities_root=entities_root,
-                entity_path=entity_path,
+                entity_layout=entity_layout,
                 additional_flow_task_types=additional_flow_task_types,
                 additional_task_paths=additional_task_paths,
             )
@@ -277,6 +293,12 @@ class FlowDeployPlanner(StandardTask):
                 )
             )
 
+        # --- Step 4d: Warn about stale generated target structures
+        self._warn_stale_generated_structures(
+            scoped_graph=scoped_graph,
+            flow_ids=sorted_flow_ids,
+        )
+
         # --- Step 5: Detect REMOVED flows
         current_keys = {
             self._build_flow_key(
@@ -297,6 +319,14 @@ class FlowDeployPlanner(StandardTask):
             flow_name=self._name,
             namespace=self._namespace,
             upstream=self._upstream,
+            groups=[] if deploy_scope is None else deploy_scope.groups,
+            lock_keys=resolve_lock_keys(
+                deploy_scope=deploy_scope,
+                structure_namespace_config=(
+                    self.execution_context.project.structure_namespace_config
+                ),
+            ),
+            namespaces=[] if deploy_scope is None else deploy_scope.unit_namespaces,
         )
 
         if not entries and not structure_entries and not pending_change_files:
@@ -329,6 +359,146 @@ class FlowDeployPlanner(StandardTask):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _warn_stale_generated_structures(
+        self,
+        scoped_graph: ScopedDataFlowGraph,
+        flow_ids: list[str],
+    ) -> None:
+        """Warn when a deployed flow targets a stale generated structure.
+
+        Deploying such a flow is allowed: the structure file stays the
+        reference, so the warning only asks to regenerate it first.
+        """
+        project = self.execution_context.project
+        generator = TargetStructureGenerator(
+            entities_root_folder_path=project.entities_root_folder_path,
+            entity_layout=project.entity_layout,
+            entity_registry=self.execution_context.entity_registry,
+        )
+        for flow_id in flow_ids:
+            flow_definition = scoped_graph.get_flow(flow_id=flow_id).model
+            if flow_definition.target_structure is None:
+                continue
+            try:
+                target_structure = flow_definition.resolve_target_structure()
+            except Exception:
+                continue
+            if not target_structure.is_generated():
+                continue
+            stale_reasons = generator.find_staleness_issues(
+                namespaced_structure=NamespacedStructure(
+                    model=target_structure,
+                    namespace=str(flow_definition.target_structure.namespace),
+                ),
+            )
+            for stale_reason in stale_reasons:
+                self.log_warn(
+                    f"Generated structure '{flow_definition.target_structure}' of "
+                    f"flow '{strip_node_type_prefix(flow_id)}' is stale: "
+                    f"{stale_reason}. Run 'nld structure generate' to regenerate it"
+                )
+
+    def _resolve_deploy_scope(self) -> NamespaceDeployScope | None:
+        """Resolve the namespace deploy scope, None when not deploying a namespace.
+
+        Only a namespace-level deploy (``--namespace`` without ``--name``)
+        has a scope. With ``--name`` the namespace only locates the asset:
+        a single flow deploys like before namespace deploys existed, without
+        requiring the namespace to be declared deployable.
+        """
+        if self._namespace is None or self._name is not None:
+            return None
+        project = self.execution_context.project
+        deploy_scope = resolve_namespace_deploy_scope(
+            namespace=self._namespace,
+            structure_namespace_config=project.structure_namespace_config,
+            deploy_namespace_config=project.deploy_namespace_config,
+        )
+        self.log_info(f"Deploy scope: {deploy_scope.describe()}")
+        return deploy_scope
+
+    def _load_flows_in_scope(
+        self,
+        deploy_scope: NamespaceDeployScope | None,
+    ) -> dict[str, NamespacedDataFlowDefinition]:
+        """Return the flows of the deploy scope.
+
+        A namespace deploy takes the flows of its deployment units only:
+        the descendants mapped to another deploy target are left out and
+        named, so their exclusion is visible.
+        """
+        registry = self.execution_context.entity_registry
+        if deploy_scope is None:
+            # The whole project, or the namespace locating a named flow.
+            return registry.get_data_flow_definition_dict(
+                namespace=self._namespace,
+            )
+        all_flows = registry.get_data_flow_definition_dict()
+
+        for excluded_namespace in deploy_scope.find_excluded_namespaces(
+            namespaces=[flow.namespace for flow in all_flows.values()],
+        ):
+            self.log_info(
+                f"Namespace '{excluded_namespace}' deploys to another target — "
+                "excluded from this deploy",
+            )
+        return {
+            key: namespaced_flow
+            for key, namespaced_flow in all_flows.items()
+            if deploy_scope.contains(namespace=namespaced_flow.namespace)
+        }
+
+    def _check_targets_in_scope(
+        self,
+        scoped_flows: dict[str, NamespacedDataFlowDefinition],
+        deploy_scope: NamespaceDeployScope,
+    ) -> None:
+        """Refuse a namespace deploy whose flows target another unit's tables.
+
+        Deploying such a flow would apply DDL outside the scope. Only the
+        flows this deploy selects count — a ``--name`` deploy is not refused
+        for another flow of its unit — and only the tables a deploy changes:
+        views, external sources and tables managed by flow execution do not
+        count. Checked before anything is read from or written to a target,
+        so a preview refuses exactly like an apply.
+        """
+        violations: list[str] = []
+        for namespaced_flow in scoped_flows.values():
+            flow_definition = namespaced_flow.model
+            if flow_definition.target_structure is None:
+                continue
+            if deploy_scope.contains_entity_key(
+                entity_key=str(flow_definition.target_structure),
+            ):
+                continue
+            try:
+                target_structure = flow_definition.resolve_target_structure()
+            except Exception:
+                # An unresolvable target fails its own structure entry
+                # later; it is no proof of an out-of-scope write.
+                continue
+            if (
+                not target_structure.is_table()
+                or target_structure.is_external_source()
+                or target_structure.is_managed_by_flow_execution()
+            ):
+                continue
+            flow_key = build_entity_key(
+                namespace=namespaced_flow.namespace,
+                entity_name=flow_definition.name,
+            )
+            violations.append(
+                f"flow '{flow_key}' targets structure "
+                f"'{flow_definition.target_structure}'",
+            )
+        if violations:
+            raise NamespaceDeployScopeError(
+                f"The deploy of {deploy_scope.describe()} would change tables "
+                f"outside its scope: {'; '.join(sorted(violations))}. Deploy "
+                "the namespace owning each target, or declare both namespaces "
+                "in the same deploy group.",
+            )
 
     def _can_detect_removals(self) -> bool:
         """Whether the resolved scope can prove that a flow was removed.
@@ -383,13 +553,23 @@ class FlowDeployPlanner(StandardTask):
         if not self._upstream and not self._downstream:
             return set(graph.flow_ids)
 
-        scoped_graph = graph.get_scoped_subgraph(
-            name=self._name,
-            namespace=self._namespace,
-            node_type=FLOW_NODE_TYPE,
-            upstream=self._upstream,
-            downstream=self._downstream,
-        )
+        try:
+            scoped_graph = graph.get_scoped_subgraph(
+                name=self._name,
+                namespace=self._namespace,
+                node_type=FLOW_NODE_TYPE,
+                upstream=self._upstream,
+                downstream=self._downstream,
+            )
+        except KeyError:
+            if self._name is not None:
+                raise
+            # A namespace with no flow of its own has no lineage to
+            # expand: the deploy is empty rather than an error.
+            self.log_info(
+                f"No flow in namespace '{self._namespace}' — empty lineage scope",
+            )
+            return set()
 
         return set(scoped_graph.flow_ids)
 
@@ -398,7 +578,7 @@ class FlowDeployPlanner(StandardTask):
         namespaced_flow: NamespacedDataFlowDefinition,
         previously_deployed: dict[str, FlowDeployMetadataRow],
         entities_root: str,
-        entity_path: str | None,
+        entity_layout: NldEntityLayout | None,
         additional_flow_task_types: dict[str, str] | None,
         additional_task_paths: list[str] | None,
     ) -> FlowChangeEntry:
@@ -416,11 +596,12 @@ class FlowDeployPlanner(StandardTask):
             entities_root_folder_path=entities_root,
             namespace=namespace,
             flow_name=flow_def.name,
+            entity_layout=entity_layout,
         )
         python_hash = compute_flow_python_hash(
             flow_definition=flow_def,
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )
@@ -428,7 +609,7 @@ class FlowDeployPlanner(StandardTask):
             flow_definition=flow_def,
             entities_root_folder_path=entities_root,
             namespace=namespace,
-            entity_path=entity_path,
+            entity_layout=entity_layout,
             additional_task_paths=additional_task_paths,
             additional_flow_task_types=additional_flow_task_types,
         )
@@ -460,8 +641,15 @@ class FlowDeployPlanner(StandardTask):
             hash_changes=hash_changes,
         )
 
-    def _load_pending_change_files(self) -> list[PendingChangeFile]:
-        """Load the pending deployment change files for this target."""
+    def _load_pending_change_files(
+        self,
+        deploy_scope: NamespaceDeployScope | None,
+    ) -> list[PendingChangeFile]:
+        """Load the pending deployment change files of the deploy scope.
+
+        A namespace deploy keeps the directives of its scope only: the
+        others are neither applied nor reported as pending changes.
+        """
         change_log_manager = DeploymentChangeLogManager(
             connector=self._metadata_backend_connector,
         )
@@ -475,7 +663,17 @@ class FlowDeployPlanner(StandardTask):
             applied_hashes_by_change_id=change_log_manager.get_applied_hashes(
                 metadata_schema=self._metadata_schema,
             ),
+            applied_directives_by_change_id=(
+                change_log_manager.get_applied_directives(
+                    metadata_schema=self._metadata_schema,
+                )
+            ),
         )
+        if deploy_scope is not None:
+            pending = scope_pending_change_files(
+                pending_change_files=pending,
+                is_directive_in_scope=deploy_scope.contains_directive,
+            )
         if pending:
             pending_ids = ", ".join(change.change_id for change in pending)
             self.log_info(f"Pending deployment change file(s): {pending_ids}")
@@ -613,7 +811,7 @@ class FlowDeployPlanner(StandardTask):
                 entity_name=desired_structure.name,
             )
 
-            structure_config = self.execution_context.project.structure_config
+            structure_config = self.execution_context.project.structure_namespace_config
             mapping = structure_config.get_mapping(namespace=namespace)
             connector_name = mapping.default_connection_name
 
@@ -727,6 +925,8 @@ class FlowDeployPlanner(StandardTask):
                 view_flows_to_execute = self._resolve_view_flows(
                     view_names=list(reversed(change_set.dependent_views)),
                     table_name=desired_structure.name,
+                    connection_name=connector_name,
+                    schema_name=mapping.schema_name,
                 )
 
             structure_entries.append(
@@ -748,6 +948,8 @@ class FlowDeployPlanner(StandardTask):
         self,
         view_names: list[str],
         table_name: str,
+        connection_name: str,
+        schema_name: str,
     ) -> list[str]:
         """Map dependent views to the VIEW flows that recreate them.
 
@@ -755,27 +957,49 @@ class FlowDeployPlanner(StandardTask):
         flows, in dependency order (shallowest first). A dependent
         view no flow manages cannot be recreated: the deploy fails
         before anything is dropped.
+
+        Dependent views are reported for the touched schema only, so
+        the VIEW flows are looked up in every namespace deploying to
+        that same schema — not only in the deploy scope: a view another
+        namespace owns in a shared schema is dropped all the same, and
+        only its own flow can recreate it.
         """
         registry = self.execution_context.entity_registry
-        all_flows = registry.get_data_flow_definition_dict(
-            namespace=self._namespace,
-        )
+        all_flows = registry.get_data_flow_definition_dict()
+        structure_config = self.execution_context.project.structure_namespace_config
 
-        flow_by_view_name: dict[str, str] = {}
+        # Same-name structures may live in several namespaces while the
+        # database only reports bare view names, so every VIEW flow
+        # targeting that name is recreated rather than an arbitrary one.
+        flows_by_view_name: dict[str, list[str]] = {}
         for namespaced_flow in all_flows.values():
             flow_def = namespaced_flow.model
             if flow_def.write_strategy != "VIEW":
+                continue
+            if flow_def.target_structure is None:
+                continue
+            view_target = resolve_deploy_target(
+                structure_namespace_config=structure_config,
+                namespace=str(flow_def.target_structure.namespace),
+            )
+            if (
+                view_target is None
+                or view_target.connection_name != connection_name
+                or view_target.schema_name != schema_name
+            ):
                 continue
             try:
                 target_name = flow_def.resolve_target_structure().name
             except Exception:
                 continue
-            flow_by_view_name[target_name] = self._build_flow_key(
-                namespace=namespaced_flow.namespace,
-                flow_name=flow_def.name,
+            flows_by_view_name.setdefault(target_name, []).append(
+                self._build_flow_key(
+                    namespace=namespaced_flow.namespace,
+                    flow_name=flow_def.name,
+                )
             )
 
-        unmanaged = [name for name in view_names if name not in flow_by_view_name]
+        unmanaged = [name for name in view_names if name not in flows_by_view_name]
         if unmanaged:
             unmanaged_names = ", ".join(unmanaged)
             raise NldRuntimeException(
@@ -784,7 +1008,9 @@ class FlowDeployPlanner(StandardTask):
                 "flow manages — they cannot be recreated automatically. "
                 "Drop or take over these views explicitly before deploying.",
             )
-        return [flow_by_view_name[name] for name in view_names]
+        return [
+            flow_key for name in view_names for flow_key in flows_by_view_name[name]
+        ]
 
     @staticmethod
     def _extract_namespace_from_entity_id(

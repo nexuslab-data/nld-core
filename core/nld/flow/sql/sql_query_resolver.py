@@ -99,7 +99,7 @@ def _resolve_source_table_paths(
         return {}
 
     context = NldExecutionContext.require_current()
-    structure_config = context.project.structure_config
+    structure_config = context.project.structure_namespace_config
 
     if source_predecessor_key is not None:
         predecessor = predecessors[source_predecessor_key]

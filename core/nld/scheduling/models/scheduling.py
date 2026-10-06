@@ -40,12 +40,17 @@ class FlowTask(NldNamedBaseModel):
     is first-class metadata rather than something read back from the trigger,
     because a flow-triggered asset has no cron to read and a cron says when a
     run fires, not the cadence consumers are promised.
+
+    ``max_attempts`` overrides the namespace-level retry budget for this task
+    alone; left unset, the namespace default applies (see
+    ``SchedulingNamespaceConfig``).
     """
 
     flow: NldEntityReference[DataFlowDefinition]
     params: dict[str, Any] = Field(default_factory=dict)
     environments: dict[str, EnvironmentScheduling] = Field(default_factory=dict)
     frequency: ExecutionFrequency | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=10)
 
     def for_environment(self, environment: str) -> EnvironmentScheduling | None:
         """Return the scheduling config for an environment, or None if absent."""

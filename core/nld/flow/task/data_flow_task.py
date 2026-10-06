@@ -1,11 +1,13 @@
 import abc
 import datetime
+import sys
 from typing import Any, ClassVar
 
 from nld.connector.base import (
     QueryExecResultFormatter,
 )
 from nld.connector.base.query import QueryExecResult
+from nld.flow.alerting import FlowAlertingService, FlowExecutionOutcome
 from nld.flow.definition import (
     DataFlowDefinition,
     NamespacedDataFlowDefinition,
@@ -129,6 +131,7 @@ class DataFlowTask(BaseTask, abc.ABC):
         self._state_backend_connector_wrapper = state_backend_connector_wrapper
         self._state_manager: FlowStateManager[Any, Any, Any, Any] | None = None
         self._data_quality_service: FlowDataQualityService | None = None
+        self._data_quality_results: list[DataQualityCheckResult] = []
         self.namespaced_data_flow_definition = namespaced_data_flow_definition
         self.planned_state_policy = planned_state_policy
 
@@ -786,6 +789,7 @@ class DataFlowTask(BaseTask, abc.ABC):
             self._append_data_quality_failure_step(error_message=str(ex))
             return False
 
+        self._data_quality_results = list(results)
         self._append_steps_from_data_quality_check_results(results=results)
         service.log_check_results(results=results)
 
@@ -864,8 +868,22 @@ class DataFlowTask(BaseTask, abc.ABC):
         """
         Execute the complete extraction workflow.
 
-        Orchestrates pre-processing, flow execution, and post-processing.
+        Orchestrates pre-processing, flow execution, and post-processing,
+        then reports the outcome (see ``report_execution_outcome``) whatever
+        it was, before re-raising the error of a failed run.
         """
+        outcome_error: Exception | None = None
+        try:
+            self._run_lifecycle()
+        except Exception as ex:
+            outcome_error = ex
+        self.report_execution_outcome(error=outcome_error)
+        if outcome_error is not None:
+            raise outcome_error
+        return self.flow_execution_info
+
+    def _run_lifecycle(self) -> None:
+        """Pre-processing, flow execution, quality checks, post-processing."""
         self.pre_processing()
         self.state_manager.save_execution_start()
         if self._has_data_quality_checks_enabled():
@@ -892,4 +910,60 @@ class DataFlowTask(BaseTask, abc.ABC):
 
         if flow_error is not None:
             raise flow_error
-        return self.flow_execution_info
+
+    def report_execution_outcome(self, error: Exception | None) -> None:
+        """Alert on the outcome and print the outcome line. Never raises.
+
+        nld alerts on what it knows about — a violated check, the flow's own
+        error — and tells its scheduler so through the outcome line, so the
+        scheduler only alerts on the failures nld could not report. The
+        alerting service comes from the execution context's provider; with
+        no context (an embedded call, a bare unit test) nothing is reported.
+        A problem in the reporting itself is logged and must not turn a
+        completed execution into a failed one.
+        """
+        try:
+            self._report_execution_outcome(error=error)
+        except Exception as ex:
+            self.log_warn(f"Execution outcome could not be reported: {ex}")
+
+    def _report_execution_outcome(self, error: Exception | None) -> None:
+        from nld.task.context import NldExecutionContext
+
+        context = NldExecutionContext.get_current()
+        if context is None:
+            return
+        service = context.alerting_provider.for_flow(
+            flow_namespace=self.flow_execution_info.flow_namespace,
+        )
+        execution_status = self.flow_execution_info.execution_status
+        if execution_status is None:
+            execution_status = (
+                FlowExecStatus.FAILED if error is not None else FlowExecStatus.SUCCEEDED
+            )
+        level = FlowAlertingService.resolve_level(
+            execution_status=execution_status,
+            quality_results=self._data_quality_results,
+            error=error,
+        )
+        alerted = False
+        if level is not None and service.should_alert(level):
+            alerted = service.notify(
+                service.build_alert(
+                    level=level,
+                    execution_status=execution_status,
+                    flow_execution_info=self.flow_execution_info,
+                    quality_results=self._data_quality_results,
+                    error=error,
+                ),
+            )
+        outcome_line = service.build_outcome_line(
+            FlowExecutionOutcome(
+                execution_status=execution_status,
+                alert_level=level,
+                alerted=alerted,
+            ),
+        )
+        if outcome_line is not None:
+            sys.stdout.write(outcome_line + "\n")
+            sys.stdout.flush()

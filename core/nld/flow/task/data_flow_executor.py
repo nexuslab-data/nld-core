@@ -89,7 +89,7 @@ class DataFlowExecutor(NldLoggable):
         # --- Step 2: Check of data flow definition coherence (also loads task module)
         is_valid, error_messages = self.data_flow_definition.check_coherence(
             namespace=self.namespace,
-            entity_path=self.nld_execution_context.project.entity_path,
+            entity_layout=self.nld_execution_context.project.entity_layout,
             additional_task_paths=self.nld_execution_context.project.flows_python_additional_paths,
             additional_flow_task_types=self.nld_execution_context.project.flow_config.additional_flow_task_types,
         )
@@ -429,7 +429,7 @@ def execute_data_flow(
     # --- Step 3: Load the task module
     namespaced_data_flow_definition.model.load_task_module(
         namespace=namespaced_data_flow_definition.namespace,
-        entity_path=nld_execution_context.project.entity_path,
+        entity_layout=nld_execution_context.project.entity_layout,
         additional_task_paths=nld_execution_context.project.flows_python_additional_paths,
         additional_flow_task_types=nld_execution_context.project.flow_config.additional_flow_task_types,
     )

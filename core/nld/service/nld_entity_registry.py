@@ -12,6 +12,7 @@ from nld.governance.ownership import (
     NamespacedStructureOwner,
     StructureOwner,
 )
+from nld.pydantic import NldEntityLayout
 from nld.scheduling import (
     FlowTask,
     NamespacedFlowTaskModel,
@@ -44,6 +45,7 @@ from nld.structure.structure_model.structure_model import (
 from .entity_definition import (
     ENTITY_CATEGORY_DATA_FLOW,
     ENTITY_CATEGORY_GOVERNANCE,
+    ENTITY_CATEGORY_SCHEDULING,
     ENTITY_CATEGORY_STRUCTURE,
     ENTITY_CATEGORY_STRUCTURE_CONFIGURATION,
     ENTITY_CATEGORY_VOCABULARY,
@@ -147,6 +149,7 @@ ALL_ENTITY_DEFINITIONS = [
         folder_name="structure",
         category=ENTITY_CATEGORY_STRUCTURE,
         display_name="Structure",
+        allow_same_name_across_namespaces=True,
     ),
     EntityDefinition(
         name=EntityTypeNames.STRUCTURE_MODEL,
@@ -169,13 +172,14 @@ ALL_ENTITY_DEFINITIONS = [
         folder_name=f"{EntityTypeNames.DATA_FLOW_DEFINITION}",
         category=ENTITY_CATEGORY_DATA_FLOW,
         display_name="Data Flow Definition",
+        allow_same_name_across_namespaces=True,
     ),
     EntityDefinition(
         name=EntityTypeNames.FLOW_TASK,
         model_type=FlowTask,
         folder_name=f"{EntityTypeNames.FLOW_TASK}",
-        category=ENTITY_CATEGORY_DATA_FLOW,
-        display_name="Flow Task",
+        category=ENTITY_CATEGORY_SCHEDULING,
+        display_name="Scheduled Flow Task",
     ),
     # Vocabulary entities - inherit from parent namespaces with nearest override
     EntityDefinition(
@@ -235,6 +239,9 @@ class NldEntityRegistry(EntityProvider):
         fail_on_missing_folder: bool = False,
         force_reload: bool = False,
         requested_entity_definitions: list[EntityDefinition] | None = None,
+        additional_root_directories: list[str] | None = None,
+        entity_layout: NldEntityLayout | None = None,
+        namespace: str | None = None,
     ) -> None:
         """Load entities, always including ``always_load`` entity types.
 
@@ -262,6 +269,9 @@ class NldEntityRegistry(EntityProvider):
             fail_on_missing_folder=fail_on_missing_folder,
             force_reload=force_reload,
             requested_entity_definitions=requested_entity_definitions,
+            additional_root_directories=additional_root_directories,
+            entity_layout=entity_layout,
+            namespace=namespace,
         )
 
     # Field methods

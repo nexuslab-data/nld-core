@@ -5,7 +5,7 @@ import shutil
 from types import ModuleType
 from typing import Any
 
-from nld.pydantic import NldNamedBaseModel, NldNamespace
+from nld.pydantic import NldEntityLayout, NldNamedBaseModel, NldNamespace
 from nld.utils.datetime_util import (
     get_current_datetime_as_filesystem_friendly_str,
 )
@@ -23,16 +23,23 @@ class FileOutputService(NldMixIn):
 
     Individual write methods may append sub-folders to this base path
     (e.g. `internal_folder_name` and `namespace` in `write_yaml_file`).
+    When an `entity_layout` is provided, an `internal_folder_name` paired
+    with a `namespace` is laid out like the project entities, so a written
+    entity can be copied as is into a project using namespace folders.
     """
 
     def __init__(
         self,
         root_folder_path: str,
         override_output_folder_path: str | None = None,
+        entity_layout: NldEntityLayout | None = None,
     ) -> None:
         super().__init__()
         self.root_folder_path = root_folder_path
         self.override_output_folder_path = override_output_folder_path
+        self.entity_layout = (
+            entity_layout if entity_layout is not None else NldEntityLayout()
+        )
 
     def determine_output_folder_path(self) -> str:
         folder_path = (
@@ -44,19 +51,37 @@ class FileOutputService(NldMixIn):
         )
         return folder_path
 
+    def _build_output_folder_path(
+        self,
+        internal_folder_name: str | None,
+        namespace: str | None,
+    ) -> str:
+        """Append the internal folder and the namespace to the output folder."""
+        output_folder_path = self.determine_output_folder_path()
+        if internal_folder_name is not None:
+            return os.path.join(
+                output_folder_path,
+                self.entity_layout.get_entity_relative_directory(
+                    entity_folder_name=internal_folder_name,
+                    namespace=NldNamespace(namespace),
+                ),
+            )
+        if namespace is not None:
+            namespace_path = NldNamespace(namespace).to_path()
+            if namespace_path:
+                output_folder_path = os.path.join(output_folder_path, namespace_path)
+        return output_folder_path
+
     def write_yaml_file(
         self,
         nld_base_model: NldNamedBaseModel,
         internal_folder_name: str | None = None,
         namespace: str | None = None,
     ) -> None:
-        output_folder_path = self.determine_output_folder_path()
-        if internal_folder_name is not None:
-            output_folder_path = os.path.join(output_folder_path, internal_folder_name)
-        if namespace is not None:
-            namespace_path = NldNamespace(namespace).to_path()
-            if namespace_path:
-                output_folder_path = os.path.join(output_folder_path, namespace_path)
+        output_folder_path = self._build_output_folder_path(
+            internal_folder_name=internal_folder_name,
+            namespace=namespace,
+        )
         os.makedirs(output_folder_path, exist_ok=True)
         nld_data_class_dict = nld_base_model.to_dict()
         nld_data_class_yaml_path = os.path.join(
@@ -71,13 +96,10 @@ class FileOutputService(NldMixIn):
         namespace: str | None = None,
     ) -> str:
         """Build the full output file path including subfolders."""
-        output_folder_path = self.determine_output_folder_path()
-        if internal_folder_name is not None:
-            output_folder_path = os.path.join(output_folder_path, internal_folder_name)
-        if namespace is not None:
-            namespace_path = NldNamespace(namespace).to_path()
-            if namespace_path:
-                output_folder_path = os.path.join(output_folder_path, namespace_path)
+        output_folder_path = self._build_output_folder_path(
+            internal_folder_name=internal_folder_name,
+            namespace=namespace,
+        )
         return os.path.join(output_folder_path, file_name)
 
     def write_file(

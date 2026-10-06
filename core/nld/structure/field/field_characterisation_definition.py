@@ -37,7 +37,9 @@ class FieldCharacterisationDefinitionNames(NldStrEnum):
 
     REC_PREVIOUS_LAYER_UPDATE_TST = "rec_previous_layer_update_tst"
     REC_INSERT_TST = "rec_insert_tst"
+    REC_INSERT_BY = "rec_insert_by"
     REC_LAST_UPDATE_TST = "rec_last_update_tst"
+    REC_LAST_UPDATE_BY = "rec_last_update_by"
 
     REC_SOURCE_EXTRACTION_TST = "rec_source_extraction_tst"
     REC_SOURCE_INSERT_TST = "rec_source_insert_tst"
@@ -77,11 +79,27 @@ class FieldCharacterisationDefinitions:
         ),
         applicable_to_single_field_per_structure=True,
     )
+    REC_INSERT_BY = FieldCharacterisationDefinition(
+        name=FieldCharacterisationDefinitionNames.REC_INSERT_BY.name,
+        description=(
+            "Record Technical Characterisation - User that inserted the record "
+            "in the current structure"
+        ),
+        applicable_to_single_field_per_structure=True,
+    )
     REC_LAST_UPDATE_TST = FieldCharacterisationDefinition(
         name=FieldCharacterisationDefinitionNames.REC_LAST_UPDATE_TST.name,
         description=(
             "Record Technical Characterisation - Timestamp of last update "
             "in the current structure"
+        ),
+        applicable_to_single_field_per_structure=True,
+    )
+    REC_LAST_UPDATE_BY = FieldCharacterisationDefinition(
+        name=FieldCharacterisationDefinitionNames.REC_LAST_UPDATE_BY.name,
+        description=(
+            "Record Technical Characterisation - User that applied the last "
+            "update in the current structure"
         ),
         applicable_to_single_field_per_structure=True,
     )

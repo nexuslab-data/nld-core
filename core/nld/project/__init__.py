@@ -1,4 +1,12 @@
 from .additional_entity_config import AdditionalEntityConfig
+from .additional_entity_paths import (
+    PACKAGE_ENTITY_PATH_SCHEME,
+    resolve_additional_entity_paths,
+)
+from .deploy_config import (
+    DeployNamespaceConfig,
+    DeployNamespaceMapping,
+)
 from .environment_config import (
     NLD_ENVIRONMENT_ENV_VAR,
     EnvironmentConfig,
@@ -6,7 +14,6 @@ from .environment_config import (
 )
 from .project import (
     NLD_PROJECT_FILENAME,
-    STRUCTURE_CONFIG_FILENAME,
     Project,
 )
 from .project_catalog import (
@@ -17,6 +24,8 @@ from .project_catalog import (
 
 __all__ = [
     "AdditionalEntityConfig",
+    "DeployNamespaceConfig",
+    "DeployNamespaceMapping",
     "EnvironmentConfig",
     "EnvironmentsConfig",
     "NLD_ENVIRONMENT_ENV_VAR",
@@ -24,6 +33,7 @@ __all__ = [
     "NLD_PROJECT_FILENAME",
     "NldProjectCatalog",
     "NldProjectCatalogEntry",
+    "PACKAGE_ENTITY_PATH_SCHEME",
     "Project",
-    "STRUCTURE_CONFIG_FILENAME",
+    "resolve_additional_entity_paths",
 ]

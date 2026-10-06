@@ -19,3 +19,18 @@ def camel_to_kebab(name: str) -> str:
     kebab_str = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
     kebab_str = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", kebab_str)
     return kebab_str.lower()
+
+
+def escape_html_entities(text: str) -> str:
+    """Escape the three characters HTML and Slack's mrkdwn both reserve."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def truncate_text(
+    text: str,
+    limit: int,
+) -> str:
+    """Cut ``text`` to ``limit`` characters, ending with an ellipsis when cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"

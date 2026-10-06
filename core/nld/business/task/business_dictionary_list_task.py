@@ -27,7 +27,8 @@ class BusinessDictionaryListTask(StandardTask):
         super().__init__(**kwargs)
         self.namespace = namespace
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.BUSINESS_DICTIONARY]
+            entity_types=[EntityTypeNames.BUSINESS_DICTIONARY],
+            namespace=self.namespace,
         )
 
     def run(self, **kwargs: Any) -> bool:

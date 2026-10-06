@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any, ClassVar, cast
 
 from nld.connector.base.connector import SQLDataConnector
+from nld.deploy import (
+    DeploymentLockManager,
+    DeploymentScopeManager,
+    DeploymentScopeRow,
+    NamespaceDeployScope,
+    resolve_lock_keys,
+    resolve_namespace_deploy_scope,
+    scope_pending_change_files,
+)
 from nld.deploy.change_file_loader import (
     group_backfill_defaults_by_structure,
     group_field_renames_by_structure,
@@ -23,7 +33,7 @@ from nld.deploy.change_log_manager import (
 )
 from nld.exceptions import NldRuntimeException
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
-from nld.pydantic.namespace import NldNamespace, build_entity_key
+from nld.pydantic.namespace import build_entity_key
 from nld.service import EntityTypeNames
 from nld.structure.deploy.deploy_target_factory import StructureDeployTargetFactory
 from nld.structure.deploy.structure_change import (
@@ -40,6 +50,8 @@ from nld.structure.structure.structure import NamespacedStructure, Structure
 from nld.task.base import StandardTask
 from nld.utils import resolve_variables
 from nld.utils.datetime_util import get_current_datetime
+
+STRUCTURE_DEPLOY_COMMAND = "structure deploy"
 
 
 class StructureDeployExecutor(StandardTask):
@@ -129,13 +141,40 @@ class StructureDeployExecutor(StandardTask):
             namespace=self._namespace,
             structure_name=self._name,
         )
+        # With --name the namespace only locates the structure: a single
+        # structure deploys without the namespace being declared deployable.
+        deploy_scope = (
+            None
+            if self._name is not None
+            else self._resolve_deploy_scope(namespace=resolved_namespace)
+        )
+        deployment_id = str(uuid.uuid4())
+        with self._hold_deploy_lock(
+            deploy_scope=deploy_scope,
+            deployment_id=deployment_id,
+        ):
+            return self._deploy_structures(
+                resolved_namespace=resolved_namespace,
+                deploy_scope=deploy_scope,
+                deployment_id=deployment_id,
+            )
 
+    def _deploy_structures(
+        self,
+        resolved_namespace: str | None,
+        deploy_scope: NamespaceDeployScope | None,
+        deployment_id: str,
+    ) -> bool | list[StructureChangeEntry]:
+        """Deploy or preview the structures of the resolved scope."""
         structures_to_deploy = self._load_structures_to_deploy(
             namespace=resolved_namespace,
             structure_name=self._name,
+            deploy_scope=deploy_scope,
         )
 
-        pending_change_files = self._load_pending_change_files()
+        pending_change_files = self._load_pending_change_files(
+            deploy_scope=deploy_scope,
+        )
         renames_by_structure = group_field_renames_by_structure(
             pending_change_files=pending_change_files,
         )
@@ -160,7 +199,6 @@ class StructureDeployExecutor(StandardTask):
             structure_renames_by_target=structure_renames_by_target,
         )
 
-        deployment_id = str(uuid.uuid4())
         started_at = get_current_datetime()
         failed: dict[str, str] = {}
         skipped: dict[str, str] = {}
@@ -171,16 +209,10 @@ class StructureDeployExecutor(StandardTask):
                 deployment_id=deployment_id,
                 started_at=started_at,
                 structures_total=len(ordered_structures),
+                deploy_scope=deploy_scope,
             )
 
         for namespaced_structure in ordered_structures:
-            # The mapping (connection, schema) is resolved per
-            # structure: entries collected with children search
-            # direction can come from child namespaces whose mapping
-            # differs from the run's resolved namespace.
-            deploy_manager = self._get_deploy_manager(
-                namespace=namespaced_structure.namespace,
-            )
             structure_full_name = self._build_structure_full_name(
                 namespaced_structure=namespaced_structure,
             )
@@ -206,7 +238,9 @@ class StructureDeployExecutor(StandardTask):
             )
             if self._preview:
                 preview_entry = self._preview_structure(
-                    deploy_manager=deploy_manager,
+                    deploy_manager=self._get_deploy_manager(
+                        namespace=namespaced_structure.namespace,
+                    ),
                     namespaced_structure=namespaced_structure,
                     pending_field_renames=pending_field_renames,
                     pending_structure_renames=pending_structure_renames,
@@ -234,6 +268,13 @@ class StructureDeployExecutor(StandardTask):
                 continue
 
             try:
+                # The mapping (connection, schema) is resolved per
+                # structure, inside the failure boundary: a structure
+                # whose target cannot be reached fails on its own
+                # instead of aborting the run with its record open.
+                deploy_manager = self._get_deploy_manager(
+                    namespace=namespaced_structure.namespace,
+                )
                 result = deploy_manager.deploy(
                     namespaced_structure=namespaced_structure,
                     adopt=self._adopt,
@@ -412,7 +453,7 @@ class StructureDeployExecutor(StandardTask):
         resolved (connection, schema) pair and reused across the
         structures that share it.
         """
-        config = self.execution_context.project.structure_config
+        config = self.execution_context.project.structure_namespace_config
         mapping = config.get_mapping(namespace=namespace)
         if self._deploy_target_factory is None:
             self._deploy_target_factory = self._build_deploy_target_factory()
@@ -514,8 +555,11 @@ class StructureDeployExecutor(StandardTask):
         self._change_log = (change_log_manager, change_log_schema)
         return self._change_log
 
-    def _load_pending_change_files(self) -> list[PendingChangeFile]:
-        """Load the pending deployment change files for this target."""
+    def _load_pending_change_files(
+        self,
+        deploy_scope: NamespaceDeployScope | None,
+    ) -> list[PendingChangeFile]:
+        """Load the pending deployment change files of the deploy scope."""
         change_log_manager, change_log_schema = self._resolve_change_log()
         pending = resolve_pending_change_files(
             project_root_folder_path=(
@@ -524,7 +568,17 @@ class StructureDeployExecutor(StandardTask):
             applied_hashes_by_change_id=change_log_manager.get_applied_hashes(
                 metadata_schema=change_log_schema,
             ),
+            applied_directives_by_change_id=(
+                change_log_manager.get_applied_directives(
+                    metadata_schema=change_log_schema,
+                )
+            ),
         )
+        if deploy_scope is not None:
+            pending = scope_pending_change_files(
+                pending_change_files=pending,
+                is_directive_in_scope=deploy_scope.contains_directive,
+            )
         if pending:
             pending_ids = ", ".join(change.change_id for change in pending)
             self.log_info(f"Pending deployment change file(s): {pending_ids}")
@@ -535,8 +589,9 @@ class StructureDeployExecutor(StandardTask):
         deployment_id: str,
         started_at: Any,
         structures_total: int,
+        deploy_scope: NamespaceDeployScope | None = None,
     ) -> None:
-        """Insert the run-level record at the start of an apply run.
+        """Insert the run-level record and its scope at the start of an apply run.
 
         Recorded on the project's metadata backend connector; a
         project without one keeps per-target metadata only and has no
@@ -554,6 +609,78 @@ class StructureDeployExecutor(StandardTask):
                 started_at=started_at,
                 structures_total=structures_total,
             ),
+        )
+        DeploymentScopeManager(
+            connector=self._get_metadata_connector(),
+        ).record(
+            metadata_schema=metadata_schema,
+            row=DeploymentScopeRow.build(
+                deployment_id=deployment_id,
+                command=STRUCTURE_DEPLOY_COMMAND,
+                recorded_at=get_current_datetime(),
+                requested_namespace=self._namespace,
+                requested_name=self._name,
+                unit_namespaces=(
+                    [] if deploy_scope is None else deploy_scope.unit_namespaces
+                ),
+                deploy_groups=[] if deploy_scope is None else deploy_scope.groups,
+                lock_keys=self._resolve_lock_keys(deploy_scope=deploy_scope),
+            ),
+        )
+
+    def _hold_deploy_lock(
+        self,
+        deploy_scope: NamespaceDeployScope | None,
+        deployment_id: str,
+    ) -> AbstractContextManager[None]:
+        """Return the deploy lock to hold while applying, if any.
+
+        A preview changes nothing and takes no lock; a project without a
+        metadata backend connector has no shared place to hold one.
+        """
+        run_target = None if self._preview else self._resolve_run_record_target()
+        if run_target is None:
+            return nullcontext()
+        _, metadata_schema = run_target
+        scope_description = (
+            "the whole project" if deploy_scope is None else deploy_scope.describe()
+        )
+        if self._name is not None:
+            scope_description += f", structure '{self._name}'"
+        return DeploymentLockManager(
+            connector=self._get_metadata_connector(),
+        ).hold(
+            metadata_schema=metadata_schema,
+            lock_keys=self._resolve_lock_keys(deploy_scope=deploy_scope),
+            holder_id=deployment_id,
+            command=STRUCTURE_DEPLOY_COMMAND,
+            scope=scope_description,
+        )
+
+    def _resolve_lock_keys(
+        self,
+        deploy_scope: NamespaceDeployScope | None,
+    ) -> list[str]:
+        """Return the keys of the deploy targets this run may change."""
+        return resolve_lock_keys(
+            deploy_scope=deploy_scope,
+            structure_namespace_config=(
+                self.execution_context.project.structure_namespace_config
+            ),
+        )
+
+    def _get_metadata_connector(self) -> SQLDataConnector[Any]:
+        """Open (or reuse) the project's metadata backend connector."""
+        metadata_backend_connector_name = (
+            self.execution_context.project.metadata_backend_connector
+        )
+        if metadata_backend_connector_name is None:
+            raise NldRuntimeException(
+                "metadata_backend_connector must be set in the project "
+                "configuration to record deployment metadata.",
+            )
+        return self._resolve_sql_connector(
+            connection_name=metadata_backend_connector_name,
         )
 
     def _finalize_run_record(
@@ -627,17 +754,18 @@ class StructureDeployExecutor(StandardTask):
         directive_outcomes: dict[str, str],
         deployment_id: str,
     ) -> None:
-        """Record fully-applied change files in the backend applied-log.
+        """Record the resolved directives and completed change files.
 
-        A change file is recorded only when every one of its
-        directives resolved in this run — a scoped deploy leaves the
-        files with out-of-scope directives pending for a later run.
+        Each directive resolved in this run is recorded, so no later
+        deploy applies it again; a change file joins the applied-log
+        once every one of its directives is recorded — the reload and
+        flow rename directives are resolved by ``nld flow deploy``.
         """
         if not pending_change_files:
             return
         change_log_manager, change_log_schema = self._resolve_change_log()
 
-        change_log_manager.record_fully_applied(
+        change_log_manager.record_applied_directives(
             metadata_schema=change_log_schema,
             pending_change_files=pending_change_files,
             directive_outcomes=directive_outcomes,
@@ -680,8 +808,8 @@ class StructureDeployExecutor(StandardTask):
         self,
         namespace: str | None,
         structure_name: str | None,
-    ) -> str:
-        """Resolve the effective namespace.
+    ) -> str | None:
+        """Resolve the effective namespace, None for the whole project.
 
         When a structure_name is provided, retrieves the NamespacedStructure
         from the entity registry and uses its namespace.
@@ -693,16 +821,36 @@ class StructureDeployExecutor(StandardTask):
                 namespace=namespace,
             )
             return namespaced_structure.namespace
-        if namespace is None:
-            return NldNamespace.ROOT_VALUE
         return namespace
+
+    def _resolve_deploy_scope(
+        self,
+        namespace: str | None,
+    ) -> NamespaceDeployScope | None:
+        """Resolve the namespace deploy scope, None for a full-project deploy."""
+        if namespace is None:
+            return None
+        project = self.execution_context.project
+        deploy_scope = resolve_namespace_deploy_scope(
+            namespace=namespace,
+            structure_namespace_config=project.structure_namespace_config,
+            deploy_namespace_config=project.deploy_namespace_config,
+        )
+        self.log_info(f"Deploy scope: {deploy_scope.describe()}")
+        return deploy_scope
 
     def _load_structures_to_deploy(
         self,
-        namespace: str,
+        namespace: str | None,
         structure_name: str | None,
+        deploy_scope: NamespaceDeployScope | None = None,
     ) -> list[NamespacedStructure]:
-        """Load structures to deploy from the entity registry."""
+        """Load structures to deploy from the entity registry.
+
+        A namespace deploy takes the structures of its deployment units
+        only: the descendants mapped to another deploy target are left
+        out and named, so their exclusion is visible.
+        """
         entity_registry = self.execution_context.entity_registry
         if structure_name is not None:
             namespaced = entity_registry.get_structure(
@@ -723,9 +871,23 @@ class StructureDeployExecutor(StandardTask):
                 raise NldRuntimeException(msg)
             return [namespaced]
 
-        structure_dict = entity_registry.get_structure_dict(
-            namespace=namespace,
-        )
+        structure_dict = entity_registry.get_structure_dict()
+        if deploy_scope is not None:
+            for excluded_namespace in deploy_scope.find_excluded_namespaces(
+                namespaces=[
+                    namespaced_structure.namespace
+                    for namespaced_structure in structure_dict.values()
+                ],
+            ):
+                self.log_info(
+                    f"Namespace '{excluded_namespace}' deploys to another target — "
+                    "excluded from this deploy",
+                )
+            structure_dict = {
+                key: namespaced_structure
+                for key, namespaced_structure in structure_dict.items()
+                if deploy_scope.contains(namespace=namespaced_structure.namespace)
+            }
         structures: list[NamespacedStructure] = []
         for namespaced_structure in structure_dict.values():
             if (

@@ -15,6 +15,7 @@ from .structure_characterisation_def import (
     StructureCharacterisationDefinitionNames,
 )
 from .structure_definition import StructureDefinition
+from .structure_generation_metadata import StructureGenerationMetadata
 from .structure_referential import StructureNamespace
 
 # StructureAdapter must be imported AFTER StructureCharacterisation
@@ -34,6 +35,7 @@ __all__ = [
     "StructureCharacterisationDefinition",
     "StructureCharacterisationDefinitionNames",
     "StructureDefinition",
+    "StructureGenerationMetadata",
     "StructureNamespace",
     "StructureTemplate",
 ]

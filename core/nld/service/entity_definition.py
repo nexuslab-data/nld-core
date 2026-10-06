@@ -33,6 +33,7 @@ to indicate its functional purpose.
 ENTITY_CATEGORY_CONFIGURATION = "Configuration"
 ENTITY_CATEGORY_DATA_FLOW = "Data Flow"
 ENTITY_CATEGORY_GOVERNANCE = "Governance"
+ENTITY_CATEGORY_SCHEDULING = "Scheduling"
 ENTITY_CATEGORY_STRUCTURE = "Structure"
 ENTITY_CATEGORY_STRUCTURE_CONFIGURATION = "Structure Configuration"
 ENTITY_CATEGORY_VOCABULARY = "Vocabulary"
@@ -41,6 +42,7 @@ ENTITY_CATEGORIES = [
     ENTITY_CATEGORY_CONFIGURATION,
     ENTITY_CATEGORY_DATA_FLOW,
     ENTITY_CATEGORY_GOVERNANCE,
+    ENTITY_CATEGORY_SCHEDULING,
     ENTITY_CATEGORY_STRUCTURE,
     ENTITY_CATEGORY_STRUCTURE_CONFIGURATION,
     ENTITY_CATEGORY_VOCABULARY,
@@ -49,10 +51,11 @@ ENTITY_CATEGORIES = [
 ENTITY_CATEGORY_DISPLAY_ORDER: dict[str, int] = {
     ENTITY_CATEGORY_CONFIGURATION: 1,
     ENTITY_CATEGORY_DATA_FLOW: 4,
-    ENTITY_CATEGORY_GOVERNANCE: 6,
+    ENTITY_CATEGORY_GOVERNANCE: 7,
+    ENTITY_CATEGORY_SCHEDULING: 5,
     ENTITY_CATEGORY_STRUCTURE: 2,
     ENTITY_CATEGORY_STRUCTURE_CONFIGURATION: 3,
-    ENTITY_CATEGORY_VOCABULARY: 5,
+    ENTITY_CATEGORY_VOCABULARY: 6,
 }
 
 
@@ -69,6 +72,7 @@ class EntityDefinition(NldLoggable):
         category: str | None = None,
         display_name: str | None = None,
         always_load: bool = False,
+        allow_same_name_across_namespaces: bool = False,
     ):
         super().__init__()
         if file_format not in ["yaml", "jinja"]:
@@ -91,6 +95,11 @@ class EntityDefinition(NldLoggable):
         # additional entities looked up by tasks). Defaults to False so built-in
         # types keep their lazy/selective loading behaviour.
         self.always_load = always_load
+        # When True, entities sharing a name in different namespaces are all
+        # kept: bulk lookups return every copy instead of a single priority
+        # winner, and a bare-name lookup matching several copies is rejected
+        # as ambiguous rather than silently resolved.
+        self.allow_same_name_across_namespaces = allow_same_name_across_namespaces
 
     def get_model_type_name(self) -> str:
         """Get the un-camelized name of the model type."""

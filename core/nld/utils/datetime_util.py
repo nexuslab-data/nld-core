@@ -221,16 +221,22 @@ def ensure_utc_datetime(
 
 
 def normalize_to_utc(
-    value: datetime.datetime | None,
+    value: datetime.datetime | str | None,
 ) -> datetime.datetime | None:
     """Normalize a datetime to UTC timezone-aware.
 
     Naive datetimes are interpreted as UTC. Non-UTC aware
     datetimes are converted to UTC. Pandas NaT values are
     treated as None.
+
+    An ISO 8601 string is parsed first: an engine that stores a timestamp
+    as text (SQLite) hands the raw column value to the model validators,
+    which run before Pydantic parses the field.
     """
     if value is None or pd.isna(value):
         return None
+    if isinstance(value, str):
+        value = datetime.datetime.fromisoformat(value)
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.UTC)
     return value.astimezone(tz=datetime.UTC)

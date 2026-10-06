@@ -227,16 +227,56 @@ class DeploymentChangeFile(NldBaseModel):
         return directives
 
 
+class AppliedChangeDirectives(NldBaseModel):
+    """The directives of a change file applied so far on a target.
+
+    A change file can be applied over several deploys, each resolving the
+    directives of its own scope: ``outcomes`` holds the outcome of every
+    directive already resolved, by outcome key, and ``content_hash`` the
+    file content they were resolved from.
+    """
+
+    content_hash: str
+    outcomes: dict[str, str] = {}
+
+
 class PendingChangeFile(NldBaseModel):
-    """A parsed change file not yet in the target's applied-log."""
+    """A parsed change file not yet in the target's applied-log.
+
+    ``applied_directive_outcomes`` holds the directives an earlier deploy
+    already resolved, and ``out_of_scope_directive_keys`` the directives
+    outside the current deploy scope: neither is applied by this deploy.
+    """
 
     change_file: DeploymentChangeFile
     content_hash: str
     file_path: str
+    applied_directive_outcomes: dict[str, str] = {}
+    out_of_scope_directive_keys: list[str] = []
 
     @property
     def change_id(self) -> str:
         return self.change_file.change_id
+
+    def get_directives_to_apply(self) -> list[ChangeDirective]:
+        """Return the directives this deploy applies, in declaration order."""
+        return [
+            directive
+            for directive in self.change_file.get_directives()
+            if directive_outcome_key(directive=directive)
+            not in self.applied_directive_outcomes
+            and directive_outcome_key(directive=directive)
+            not in self.out_of_scope_directive_keys
+        ]
+
+    def get_unapplied_directives(self) -> list[ChangeDirective]:
+        """Return the directives no deploy has resolved yet, whatever the scope."""
+        return [
+            directive
+            for directive in self.change_file.get_directives()
+            if directive_outcome_key(directive=directive)
+            not in self.applied_directive_outcomes
+        ]
 
 
 def rename_field_outcome_key(directive: RenameFieldDirective) -> str:
@@ -283,3 +323,50 @@ def directive_outcome_key(directive: ChangeDirective) -> str:
     if directive.reload is not None:
         return reload_outcome_key(directive=directive.reload)
     raise ValueError("Empty change directive has no outcome key.")
+
+
+def directive_subject_key(directive: ChangeDirective) -> str:
+    """Return the key of the asset a directive is resolved on.
+
+    The subject decides whether a directive belongs to a deploy scope:
+    the structure a field or default belongs to, the flow reloaded, and
+    the new name of a rename, which is the asset that deploys it.
+    """
+    if directive.rename_field is not None:
+        return directive.rename_field.structure
+    if directive.rename_structure is not None:
+        return directive.rename_structure.to
+    if directive.rename_flow is not None:
+        return directive.rename_flow.to
+    if directive.backfill_default is not None:
+        return directive.backfill_default.structure
+    if directive.reload is not None:
+        return directive.reload.flow
+    raise ValueError("Empty change directive has no subject.")
+
+
+def directive_asset_keys(directive: ChangeDirective) -> set[str]:
+    """Return every asset a directive touches, prefixed by its asset type.
+
+    Two directives touching a common asset must apply in change_id order,
+    while directives on unrelated assets are independent: this is what
+    lets each namespace deploy apply its own directives. A rename touches
+    both its old and its new name.
+    """
+    if directive.rename_field is not None:
+        return {f"structure:{directive.rename_field.structure}"}
+    if directive.rename_structure is not None:
+        return {
+            f"structure:{directive.rename_structure.from_name}",
+            f"structure:{directive.rename_structure.to}",
+        }
+    if directive.rename_flow is not None:
+        return {
+            f"flow:{directive.rename_flow.from_name}",
+            f"flow:{directive.rename_flow.to}",
+        }
+    if directive.backfill_default is not None:
+        return {f"structure:{directive.backfill_default.structure}"}
+    if directive.reload is not None:
+        return {f"flow:{directive.reload.flow}"}
+    raise ValueError("Empty change directive has no asset.")

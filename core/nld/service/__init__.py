@@ -11,6 +11,7 @@ from .entity_definition_wrapper import (
     EntityDefinitionWrapper,
 )
 from .entity_provider import EntityProvider
+from .exceptions import AmbiguousEntityException, NamespaceFolderConflictException
 from .file_output_service import FileOutputService
 from .model_read_util import (
     read_entities_from_local_directory,
@@ -21,6 +22,7 @@ from .nld_entity_registry import (
 )
 
 __all__ = [
+    "AmbiguousEntityException",
     "ENTITY_CATEGORIES",
     "ENTITY_CATEGORY_CONFIGURATION",
     "ENTITY_CATEGORY_DATA_FLOW",
@@ -32,6 +34,7 @@ __all__ = [
     "EntityProvider",
     "EntityTypeNames",
     "FileOutputService",
+    "NamespaceFolderConflictException",
     "NldEntityRegistry",
     "read_entities_from_local_directory",
 ]

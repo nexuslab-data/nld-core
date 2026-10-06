@@ -98,6 +98,48 @@ class NldNamespace(str):
 
         return result
 
+    def contains(self, other: str) -> bool:
+        """True when ``other`` is this namespace or a descendant, per segment."""
+        other_namespace = NldNamespace(other)
+        return (
+            self.is_root
+            or other_namespace == self
+            or other_namespace.startswith(f"{self}.")
+        )
+
+    def is_related_to(self, other: str) -> bool:
+        """True when one namespace contains the other."""
+        return self.contains(other) or NldNamespace(other).contains(self)
+
+    def append(self, child: str) -> "NldNamespace":
+        """Append a relative namespace, e.g. "a".append("b.c") -> "a.b.c"."""
+        child_namespace = NldNamespace(child)
+        if self.is_root:
+            return child_namespace
+        if child_namespace.is_root:
+            return self
+        return NldNamespace(f"{self}.{child_namespace}")
+
+    def relative_to(self, ancestor: str) -> "NldNamespace":
+        """Return the part of this namespace below ``ancestor``.
+
+        "a.b.c" relative to "a" -> "b.c", and "a" relative to "a" -> ".".
+
+        Raises:
+            ValueError: If ``ancestor`` does not contain this namespace.
+        """
+        ancestor_namespace = NldNamespace(ancestor)
+        if not ancestor_namespace.contains(self):
+            raise ValueError(
+                f"Namespace '{self}' is not contained in namespace "
+                f"'{ancestor_namespace}'"
+            )
+        if ancestor_namespace.is_root:
+            return self
+        if ancestor_namespace == self:
+            return NldNamespace(self.ROOT_VALUE)
+        return NldNamespace(self[len(ancestor_namespace) + 1 :])
+
     def to_path(self, separator: str = os.sep) -> str:
         """Convert namespace to a filesystem-style path.
 

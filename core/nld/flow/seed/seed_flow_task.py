@@ -162,4 +162,5 @@ class SeedFlowTask(DataFlowTask):
             entities_root_folder_path=context.project.entities_root_folder_path,
             namespace=seed_namespace,
             seed_name=seed_name,
+            entity_layout=context.project.entity_layout,
         )

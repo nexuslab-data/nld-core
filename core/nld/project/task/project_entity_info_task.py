@@ -28,7 +28,9 @@ class ProjectEntityInfoTask(StandardTask):
         """Display entity information for the specified entity type."""
         run_status = BaseRunStatus.SUCCESS.value
 
-        self.execution_context.load_entities()
+        self.execution_context.load_entities(
+            namespace=self.namespace,
+        )
         registry = self.execution_context.entity_registry
 
         self._display_entity_info(registry=registry)

@@ -37,7 +37,8 @@ class StructureModelInfoTask(StandardTask):
         super().__init__(**kwargs)
         self.output = output
         self.execution_context.load_entities(
-            entity_types=[EntityTypeNames.STRUCTURE_MODEL]
+            entity_types=[EntityTypeNames.STRUCTURE_MODEL],
+            namespace=namespace,
         )
         namespaced = self.execution_context.entity_registry.get_structure_model(
             entity_key=name,

@@ -32,10 +32,19 @@ class ConnectorDeployCapabilities(NldBaseModel):
     order enforced, engines without it must REBUILD when a new field
     is declared before an existing one; engines with it keep the
     plain ALTER path and their DDL builder carries the position.
+    ``alter_column_type`` declares that the engine can change a
+    column's type in place: engines without it (SQLite, whose ALTER
+    TABLE only adds, renames and drops columns) REBUILD instead.
+    ``alter_add_primary_key`` declares that the engine can add a
+    primary key to an existing table: engines without it (SQLite,
+    which has no ALTER TABLE ADD CONSTRAINT at all) get the key
+    declared inline in the rebuilt table's CREATE instead.
     """
 
     dialect: str
+    alter_add_primary_key: bool = True
     alter_column_set_default: bool
+    alter_column_type: bool = True
     add_column_positioned: bool = False
     # Whether the reader can detect the views depending on a table.
     # When False the deploy cannot protect dependent views and warns
