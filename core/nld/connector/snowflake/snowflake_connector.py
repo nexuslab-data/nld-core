@@ -641,6 +641,25 @@ class SnowflakeConnector(SQLDataConnector[SnowflakeConnectionWrapper]):
         sql = f"CREATE OR REPLACE VIEW {view_path} AS {sql_query}"
         return self.execute_query(QueryWrapper(query=sql, name=view_path))
 
+    def replace_table_from_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        structure: Structure,
+        **kwargs: Any,
+    ) -> list[QueryExecResult]:
+        """Replace a Snowflake table with CREATE OR REPLACE TABLE ... COPY GRANTS AS.
+
+        The swap is atomic and COPY GRANTS keeps the previous table's
+        privileges. Views reading the table resolve it by name, so they
+        keep working on the new one.
+        """
+        return self._replace_table_with_create_or_replace(
+            table_path=table_path,
+            sql_query=sql_query,
+            structure=structure,
+        )
+
     def upsert_from_query(
         self,
         table_path: str,

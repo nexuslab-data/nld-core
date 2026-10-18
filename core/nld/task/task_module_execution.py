@@ -134,7 +134,12 @@ def initialize_module_execution(
     context = NldExecutionContext(task_request=task_request)
     context.set_current()
 
-    log_event_default(ExecutionStarted(exec_info=context.exec_info))
+    log_event_default(
+        ExecutionStarted(
+            exec_info=context.exec_info,
+            parameters=task_request.get_parameters(),
+        ),
+    )
 
     return context
 

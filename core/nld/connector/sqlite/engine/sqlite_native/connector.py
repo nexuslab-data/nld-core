@@ -193,8 +193,11 @@ class SQLiteSQLConnector(SQLDataConnector[SQLiteConnectionWrapper]):
         expected_output = query_wrapper.get_expected_output_type()
         resolved_operation_type = query_wrapper.operation_type
 
-        in_transaction = expected_output != QueryOutputType.DATASET
-        if in_transaction:
+        # Inside a transaction block the block owns the transaction.
+        owns_transaction = (
+            expected_output != QueryOutputType.DATASET and not self._in_transaction
+        )
+        if owns_transaction:
             self.connection.execute("BEGIN")
 
         try:
@@ -229,7 +232,7 @@ class SQLiteSQLConnector(SQLDataConnector[SQLiteConnectionWrapper]):
                     else "Statement executed successfully."
                 )
 
-            if in_transaction:
+            if owns_transaction:
                 self.connection.execute("COMMIT")
 
             return QueryExecResult(
@@ -246,7 +249,7 @@ class SQLiteSQLConnector(SQLDataConnector[SQLiteConnectionWrapper]):
                 result_data=results,
             )
         except BaseException as error:
-            if in_transaction:
+            if owns_transaction:
                 self.connection.execute("ROLLBACK")
             if isinstance(error, sqlite3.Error):
                 self.log_execution_error(error)
@@ -390,6 +393,17 @@ class SQLiteSQLConnector(SQLDataConnector[SQLiteConnectionWrapper]):
             self.connection.execute("ROLLBACK")
             raise
         return results
+
+    # Transaction block operations
+
+    def _begin_transaction(self) -> None:
+        self.connection.execute("BEGIN")
+
+    def _commit_transaction(self) -> None:
+        self.connection.execute("COMMIT")
+
+    def _rollback_transaction(self) -> None:
+        self.connection.execute("ROLLBACK")
 
     # DDL operations
 

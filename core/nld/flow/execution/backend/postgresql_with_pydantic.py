@@ -90,13 +90,13 @@ class PostgreSQLExecutionBackendStateManager(
             track_timestamps=True,
         )
 
-        # Create execution_state table with functional key as primary key
+        # Create execution_state table with business key as primary key
         self.pydantic_manager.create_table(
             model_class=FlowExecutionInfo,
             schema_name=self.backend_schema_name,
             table_name=PSQL_EXECUTION_STATE_TABLE_NAME,
             table_exists="skip",
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
             exclude_fields=self._EXCLUDE_FIELDS,
             track_timestamps=True,
         )

@@ -1,3 +1,4 @@
+import sqlglot
 from sqlglot import exp
 
 from nld.utils.sqlglot.utils import quoted_column_def, quoted_table
@@ -140,6 +141,52 @@ class BaseSqlglotDDLBuilder:
             exists=if_not_exists,
         )
         return create.sql(dialect=self._dialect)
+
+    def build_create_or_replace_table_as(
+        self,
+        create_table_sql: str,
+        select_query: str,
+    ) -> str:
+        """Turn a CREATE TABLE statement into a CREATE OR REPLACE TABLE ... AS.
+
+        The column definitions and constraints are kept, so the declared
+        types win over the ones the query returns. The query is appended
+        verbatim on its own lines, as INSERT ... SELECT does, so its
+        engine-specific syntax and trailing comments stay untouched.
+
+        Example:
+            ``CREATE TABLE s.t (id INT)`` and ``SELECT 1`` render as
+            ``CREATE OR REPLACE TABLE s.t (id INT) AS SELECT 1``.
+        """
+        create = sqlglot.parse_one(
+            create_table_sql,
+            dialect=self._dialect,
+        )
+        create.set(
+            "replace",
+            value=True,
+        )
+        replace_properties = self._build_replace_table_properties()
+        if replace_properties:
+            existing_properties = create.args.get("properties")
+            create.set(
+                "properties",
+                value=exp.Properties(
+                    expressions=[
+                        *(
+                            existing_properties.expressions
+                            if existing_properties
+                            else []
+                        ),
+                        *replace_properties,
+                    ],
+                ),
+            )
+        return f"{create.sql(dialect=self._dialect)} AS\n{select_query}\n"
+
+    def _build_replace_table_properties(self) -> list[exp.Expression]:
+        """Return the table properties a CREATE OR REPLACE TABLE adds."""
+        return []
 
     def build_drop_table(
         self,

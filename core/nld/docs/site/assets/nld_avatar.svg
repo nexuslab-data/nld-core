@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#050814"/>
+      <stop offset="100%" stop-color="#0c1229"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06d6a0"/>
+      <stop offset="100%" stop-color="#00b4d8"/>
+    </linearGradient>
+    <linearGradient id="teal2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#06d6a0"/>
+      <stop offset="100%" stop-color="#0077b6"/>
+    </linearGradient>
+    <filter id="glow2">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glow2s">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <radialGradient id="cg2" cx="50%" cy="45%" r="40%">
+      <stop offset="0%" stop-color="#06d6a0" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#050814" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="500" height="500" rx="60" fill="url(#bg2)"/>
+  <rect width="500" height="500" rx="60" fill="url(#cg2)"/>
+
+  <!-- Large outer hexagon -->
+  <polygon points="250,70 400,155 400,325 250,410 100,325 100,155"
+    fill="none" stroke="#06d6a0" stroke-width="1" opacity="0.12"/>
+
+  <!-- Medium hexagon -->
+  <polygon points="250,110 370,180 370,300 250,370 130,300 130,180"
+    fill="none" stroke="#06d6a0" stroke-width="1.2" opacity="0.2"/>
+
+  <!-- Inner hexagon with fill -->
+  <polygon points="250,155 330,205 330,285 250,335 170,285 170,205"
+    fill="#06d6a0" fill-opacity="0.04" stroke="url(#teal)" stroke-width="2" opacity="0.6"/>
+
+  <!-- Core hexagon -->
+  <g filter="url(#glow2)">
+    <polygon points="250,195 290,220 290,265 250,290 210,265 210,220"
+      fill="#050814" stroke="url(#teal)" stroke-width="2.5"/>
+  </g>
+
+  <!-- Center "N" letterform -->
+  <g filter="url(#glow2s)">
+    <text x="250" y="265" text-anchor="middle" font-family="'SF Pro Display', 'Segoe UI', system-ui, sans-serif" font-weight="800" font-size="52" fill="url(#teal)" letter-spacing="-1">N</text>
+  </g>
+
+  <!-- Corner data nodes on medium hexagon -->
+  <g filter="url(#glow2s)">
+    <!-- Top -->
+    <circle cx="250" cy="110" r="5" fill="#050814" stroke="#06d6a0" stroke-width="1.5"/>
+    <circle cx="250" cy="110" r="2" fill="#06d6a0"/>
+    <!-- Top-right -->
+    <circle cx="370" cy="180" r="5" fill="#050814" stroke="#00b4d8" stroke-width="1.5"/>
+    <circle cx="370" cy="180" r="2" fill="#00b4d8"/>
+    <!-- Bottom-right -->
+    <circle cx="370" cy="300" r="5" fill="#050814" stroke="#06d6a0" stroke-width="1.5"/>
+    <circle cx="370" cy="300" r="2" fill="#06d6a0"/>
+    <!-- Bottom -->
+    <circle cx="250" cy="370" r="5" fill="#050814" stroke="#00b4d8" stroke-width="1.5"/>
+    <circle cx="250" cy="370" r="2" fill="#00b4d8"/>
+    <!-- Bottom-left -->
+    <circle cx="130" cy="300" r="5" fill="#050814" stroke="#06d6a0" stroke-width="1.5"/>
+    <circle cx="130" cy="300" r="2" fill="#06d6a0"/>
+    <!-- Top-left -->
+    <circle cx="130" cy="180" r="5" fill="#050814" stroke="#00b4d8" stroke-width="1.5"/>
+    <circle cx="130" cy="180" r="2" fill="#00b4d8"/>
+  </g>
+
+  <!-- Connecting lines from nodes to center -->
+  <g stroke="#06d6a0" stroke-width="0.8" opacity="0.25">
+    <line x1="250" y1="110" x2="250" y2="195"/>
+    <line x1="370" y1="180" x2="290" y2="220"/>
+    <line x1="370" y1="300" x2="290" y2="265"/>
+    <line x1="250" y1="370" x2="250" y2="290"/>
+    <line x1="130" y1="300" x2="210" y2="265"/>
+    <line x1="130" y1="180" x2="210" y2="220"/>
+  </g>
+
+  <!-- Small floating data particles -->
+  <g fill="#06d6a0" opacity="0.4">
+    <circle cx="190" cy="140" r="1.5"/>
+    <circle cx="320" cy="150" r="1.5"/>
+    <circle cx="380" cy="240" r="2"/>
+    <circle cx="120" cy="240" r="2"/>
+    <circle cx="310" cy="340" r="1.5"/>
+    <circle cx="185" cy="345" r="1.5"/>
+  </g>
+
+  <!-- Text -->
+  <text x="250" y="443" text-anchor="middle" font-family="'SF Pro Display', 'Segoe UI', system-ui, sans-serif" font-weight="600" font-size="26" fill="white" letter-spacing="6" opacity="0.95">NEXUSLAB</text>
+  <text x="250" y="466" text-anchor="middle" font-family="'SF Mono', 'Fira Code', monospace" font-weight="400" font-size="12" fill="#06d6a0" letter-spacing="10" opacity="0.7">DATA</text>
+</svg>

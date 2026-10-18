@@ -569,3 +569,16 @@ class BaseSqlglotDMLBuilder:
             f"WHERE {join_conditions}"
             f")"
         )
+
+    def build_delete_where_query(
+        self,
+        table_path: str,
+        condition: exp.Expression,
+    ) -> str:
+        """Build a DELETE removing the rows matching ``condition``.
+
+        Identifiers stay unquoted here — the default suits Postgres and
+        Snowflake, whose physical names are folded by the engine; BigQuery
+        overrides this to quote them.
+        """
+        return f"DELETE FROM {table_path} WHERE {condition.sql(dialect=self._dialect)}"

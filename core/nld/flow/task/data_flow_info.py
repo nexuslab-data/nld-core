@@ -96,6 +96,9 @@ class DataFlowInfoTask(StandardTask):
             title_lines.append(
                 f"Write Strategy: {self.data_flow_definition.write_strategy}"
             )
+        options = self.data_flow_definition.write_strategy_options
+        if options is not None and options.overwrite_mode is not None:
+            title_lines.append(f"Overwrite Mode: {options.overwrite_mode}")
 
         incremental_display = self._resolve_incremental_display()
         title_lines.append(f"Incremental: {incremental_display}")
@@ -112,8 +115,21 @@ class DataFlowInfoTask(StandardTask):
         self.log_empty_line()
 
     def _resolve_incremental_display(self) -> str:
-        """Resolve the incremental type name shown in the info table."""
-        return self.data_flow_definition.resolve_incremental_logic().definition.category
+        """Resolve the incremental type shown in the info table.
+
+        The type options follow the name when the flow declares some, e.g.
+        ``by_target_period (perimeter=rolling, granularity=DAY)``.
+        """
+        category = (
+            self.data_flow_definition.resolve_incremental_logic().definition.category
+        )
+        incremental = self.data_flow_definition.incremental
+        if incremental is None or not incremental.options:
+            return category
+        options_display = ", ".join(
+            f"{key}={value}" for key, value in incremental.options.items()
+        )
+        return f"{category} ({options_display})"
 
     def _display_connectors_info(self) -> None:
         """Display connectors information as an ASCII table."""

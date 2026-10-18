@@ -7,6 +7,7 @@ from nld.cli.catalog import main_catalog
 from nld.cli.cli_utils import add_commands_from_modules
 from nld.cli.connection import main_connection
 from nld.cli.deploy import main_deploy
+from nld.cli.docs import main_docs
 from nld.cli.flow import main_flow
 from nld.cli.governance import main_governance
 from nld.cli.project import main_project
@@ -55,6 +56,15 @@ def deploy(ctx: click.Context, /, **kwargs: Any) -> None:
 
 
 add_commands_from_modules(deploy, main_deploy)
+
+
+@cli.group(no_args_is_help=True)
+@click.pass_context
+def docs(ctx: click.Context, /, **kwargs: Any) -> None:
+    """Main command line for the project documentation UI"""
+
+
+add_commands_from_modules(docs, main_docs)
 
 
 @cli.group(no_args_is_help=True)

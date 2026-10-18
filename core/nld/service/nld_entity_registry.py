@@ -180,6 +180,7 @@ ALL_ENTITY_DEFINITIONS = [
         folder_name=f"{EntityTypeNames.FLOW_TASK}",
         category=ENTITY_CATEGORY_SCHEDULING,
         display_name="Scheduled Flow Task",
+        allow_same_name_across_namespaces=True,
     ),
     # Vocabulary entities - inherit from parent namespaces with nearest override
     EntityDefinition(

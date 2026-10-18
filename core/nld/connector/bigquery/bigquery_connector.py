@@ -459,10 +459,10 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
         ]
 
         # ``override_primary_key_fields`` lets callers (e.g. the
-        # base model manager when ``use_functional_key_as_primary`` is
-        # set) force the functional key as the PRIMARY KEY instead of
+        # base model manager when ``use_business_key_as_primary`` is
+        # set) force the business key as the PRIMARY KEY instead of
         # whatever the structure declares. Without this, the override
-        # was silently swallowed by ``**kwargs`` and functional keys
+        # was silently swallowed by ``**kwargs`` and business keys
         # never became primary keys in BigQuery.
         if override_primary_key_fields is not None:
             primary_key_fields: list[str] | None = override_primary_key_fields
@@ -681,6 +681,27 @@ class BigQueryConnector(SQLDataConnector[BigQueryConnectionWrapper]):
                 query=insert_query,
                 name=table_path,
             ),
+        )
+
+    def replace_table_from_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        structure: Structure,
+        **kwargs: Any,
+    ) -> list[QueryExecResult]:
+        """Replace a BigQuery table with CREATE OR REPLACE TABLE ... AS.
+
+        The swap is one atomic job, and views reading the table resolve
+        it by name, so they keep working on the new one. BigQuery has no
+        COPY GRANTS: IAM bindings set on the table itself are lost, so
+        grant access at dataset level or re-grant in a post-deployment
+        hook of the structure.
+        """
+        return self._replace_table_with_create_or_replace(
+            table_path=table_path,
+            sql_query=sql_query,
+            structure=structure,
         )
 
     def upsert_from_query(

@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import field_validator
 
 from nld.flow.incremental.models.referential import SourceAvailability
@@ -13,6 +15,9 @@ class IncrementalConfig(NldBaseModel):
     # Per-flow override of the definition-level source availability;
     # None keeps the incremental definition default.
     source_availability: str | None = None
+    # Type-specific settings (e.g. the by_target_period granularity),
+    # validated by the options model of the incremental definition.
+    options: dict[str, Any] | None = None
 
     @field_validator("source_availability")
     @classmethod

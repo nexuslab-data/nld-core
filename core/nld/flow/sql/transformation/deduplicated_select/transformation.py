@@ -7,6 +7,7 @@ from nld.structure import (
     FieldCharacterisationDefinitionNames,
     Structure,
     StructureCharacterisationDefinitionNames,
+    resolve_structure_characterisation_alias,
 )
 
 CTE_ALIAS = "available_records"
@@ -289,18 +290,21 @@ class DeduplicatedSelectTransformation(SQLRenderingTransformation):
 
         When a key_characterisation parameter is set in the config,
         uses that characterisation directly. Otherwise falls back to
-        the functional_key characterisation.
+        the business_key characterisation.
         """
         key_characterisation = self._get_parameter("key_characterisation")
         if key_characterisation is not None:
             return self._resolve_fields_from_characterisation(
                 source_structure=source_structure,
-                characterisation=key_characterisation,
+                characterisation=resolve_structure_characterisation_alias(
+                    key_characterisation,
+                    location=f"the {self.name} key_characterisation parameter",
+                ),
             )
 
         return self._resolve_fields_from_characterisation(
             source_structure=source_structure,
-            characterisation=StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY,
+            characterisation=StructureCharacterisationDefinitionNames.BUSINESS_KEY,
         )
 
     def _resolve_fields_from_characterisation(

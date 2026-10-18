@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import psycopg2
@@ -66,6 +67,7 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             connection_wrapper: The connection wrapper for PostgreSQL.
         """
         super().__init__(connection_wrapper)
+        self._autocommit_before_transaction = False
 
     @property
     def sqlglot_dialect(self) -> str:
@@ -228,8 +230,11 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
 
             # A statement returning no result set is never a read, whatever
             # its classification: commit it so unclassified DDL cannot keep
-            # its locks until the connection's next commit.
-            if expected_output != QueryOutputType.DATASET or cur.description is None:
+            # its locks until the connection's next commit. Inside a
+            # transaction block the block commits once at its end instead.
+            if not self._in_transaction and (
+                expected_output != QueryOutputType.DATASET or cur.description is None
+            ):
                 self.connection.commit()
 
             result = QueryExecResult(
@@ -492,6 +497,29 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
             ),
         )
 
+    # Transaction block operations
+
+    def _begin_transaction(self) -> None:
+        """Start the block on a fresh transaction.
+
+        psycopg2 opens a transaction implicitly with the next statement,
+        so committing a read transaction a previous SELECT left open is
+        enough to keep it out of the block. An autocommit connection
+        would run every statement on its own: autocommit is switched off
+        for the block and restored when it ends.
+        """
+        self.connection.commit()
+        self._autocommit_before_transaction = self.connection.autocommit
+        self.connection.autocommit = False
+
+    def _commit_transaction(self) -> None:
+        self.connection.commit()
+        self.connection.autocommit = self._autocommit_before_transaction
+
+    def _rollback_transaction(self) -> None:
+        self.connection.rollback()
+        self.connection.autocommit = self._autocommit_before_transaction
+
     # DDL operations
 
     def truncate_table(self, table_path: str, **kwargs: Any) -> QueryExecResult:
@@ -572,6 +600,42 @@ class Psycopg2SQLConnector(SQLDataConnector[Psycopg2SQLConnectionWrapper]):
                 query=f"CREATE VIEW {view_path} AS ({sql_query})",
                 name=view_path,
             ),
+        )
+
+    @property
+    def replace_table_recreates_table(self) -> bool:
+        return False
+
+    def replace_table_from_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        structure: Structure,
+        **kwargs: Any,
+    ) -> list[QueryExecResult]:
+        """Replace the table content with TRUNCATE + INSERT in one transaction.
+
+        PostgreSQL has no ``CREATE OR REPLACE TABLE`` and refuses to drop a
+        table a view depends on, so the table is kept and only its content
+        is replaced. TRUNCATE is transactional on PostgreSQL: a failed
+        INSERT rolls it back and the previous rows stay in place. Readers
+        wait on the TRUNCATE lock until the commit rather than seeing an
+        empty table.
+        """
+        column_list = [field.name for field in structure.get_all_fields()]
+        return self._execute_in_transaction(
+            [
+                partial(
+                    self.truncate_table,
+                    table_path=table_path,
+                ),
+                partial(
+                    self.insert_into_from_query,
+                    table_path=table_path,
+                    sql_query=sql_query,
+                    column_list=column_list,
+                ),
+            ],
         )
 
     def create_table(

@@ -1,4 +1,5 @@
 import datetime
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import Field
@@ -13,13 +14,17 @@ from nld.flow.incremental.models import (
     IncrementalStateStatus,
 )
 from nld.pydantic import NldBaseModel
-from nld.utils.datetime_util import get_current_datetime
+from nld.utils.datetime_util import get_current_datetime, normalize_to_utc
 from nld.utils.user_display import (
     format_datetime_for_display,
     format_key_value_lines,
 )
 
 KEYS_SAMPLE_SIZE = 10
+TERMINAL_STATUSES = (
+    IncrementalStateStatus.SUCCEEDED,
+    IncrementalStateStatus.PERMANENTLY_EXCLUDED,
+)
 
 
 def render_by_key_entries(
@@ -81,6 +86,8 @@ class ByKeySingleKeyState(NldBaseModel):
     first_processed_at: datetime.datetime | None = None
     source_deleted_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    # Source update timestamp seen by the last successful processing.
+    source_last_updated_at: datetime.datetime | None = None
 
     # Processing Status methods
     def set_to_not_processed(self) -> None:
@@ -115,7 +122,29 @@ class ByKeySingleKeyState(NldBaseModel):
 
     def terminal(self) -> bool:
         """True when the key must not be re-attempted by delta strategies."""
-        return self.succeeded() or self.permanently_excluded()
+        return self.status in TERMINAL_STATUSES
+
+    def updated_in_source(
+        self,
+        source_last_updated_at: datetime.datetime | None,
+    ) -> bool:
+        """True when the source updated a SUCCEEDED key after its last success.
+
+        The source timestamp is compared with the one stored by the last
+        successful processing, so both sides come from the source clock.
+        A key processed before that timestamp was stored falls back on its
+        ``last_successfully_processed_at``. Without a source timestamp or
+        a reference to compare it with, the key is not reported updated.
+        """
+        if not self.succeeded() or source_last_updated_at is None:
+            return False
+        reference = self.source_last_updated_at or self.last_successfully_processed_at
+        if reference is None:
+            return False
+        source_timestamp = normalize_to_utc(source_last_updated_at)
+        reference_timestamp = normalize_to_utc(reference)
+        assert source_timestamp is not None and reference_timestamp is not None
+        return source_timestamp > reference_timestamp
 
 
 class ByKeyState(FlowState):
@@ -156,6 +185,38 @@ class ByKeyState(FlowState):
         """
         return {key: state for key, state in self.keys.items() if state.terminal()}
 
+    def get_terminal_key_names(self) -> set[str]:
+        """Names of the keys delta strategies must never re-attempt."""
+        return {key for key, state in self.keys.items() if state.terminal()}
+
+    def set_keys_to_permanently_excluded(
+        self,
+        names: Iterable[str],
+    ) -> dict[str, str | None]:
+        """Set the given keys to PERMANENTLY_EXCLUDED, adding the absent ones.
+
+        Only the status changes: an operator excludes a key the flow code
+        cannot classify, so its processing history stays as recorded.
+
+        Args:
+            names: Names of the keys to exclude.
+
+        Returns:
+            The previous status of each key, None for a key the state did
+            not hold.
+        """
+        previous_statuses: dict[str, str | None] = {}
+        for name in dict.fromkeys(names):
+            key_state = self.keys.get(name)
+            if key_state is None:
+                previous_statuses[name] = None
+                key_state = ByKeySingleKeyState(name=name)
+                self.add_single_key_flow_state(key_state)
+            else:
+                previous_statuses[name] = key_state.status
+            key_state.set_to_permanently_excluded()
+        return previous_statuses
+
     def render_state_text(self) -> str:
         """Render per-key counts and a sample of the last retrieved keys."""
         entries = [
@@ -187,6 +248,8 @@ class ByKeySingleKeyProcessingState(NldBaseModel):
     process_error_message: str | None = None
     processing_completed_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    # Source update timestamp of the key when the run selected it.
+    source_last_updated_at: datetime.datetime | None = None
 
     # Processing Status methods
     def set_to_be_processed(self) -> None:
@@ -267,6 +330,7 @@ class ByKeySingleKeyPlannedProcessingDetailedState(NldBaseModel):
     name: str
     planned_processing_status: str = IncrementalProcessingStatus.TO_BE_PROCESSED
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
 
 class ByKeyPlannedProcessingDetailedState(
@@ -286,6 +350,7 @@ class ByKeyPlannedProcessingDetailedState(
                     name=key.name,
                     processing_status=key.planned_processing_status,
                     parameters=key.parameters,
+                    source_last_updated_at=key.source_last_updated_at,
                 )
                 for name, key in self.keys.items()
             },
@@ -305,6 +370,7 @@ class ByKeyPlannedProcessingDetailedState(
                     name=key.name,
                     planned_processing_status=key.processing_status,
                     parameters=key.parameters,
+                    source_last_updated_at=key.source_last_updated_at,
                 )
                 for name, key in processing_state.keys.items()
             },

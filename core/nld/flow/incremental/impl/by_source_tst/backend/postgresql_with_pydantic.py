@@ -37,7 +37,7 @@ PSQL_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME = (
 class BySourceTstStateRow(NldBaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name"],
                 "name": "fk_by_source_tst_state",
             }
@@ -64,7 +64,7 @@ class BySourceTstStateRow(NldBaseModel):
 class BySourceTstProcessingStateRow(NldBaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name"],
                 "name": "fk_by_source_tst_processing_state",
             }
@@ -106,7 +106,7 @@ class BySourceTstPlannedProcessingStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["plan_state_uid"],
                 "name": "fk_by_source_tst_planned_processing_state",
             },
@@ -183,7 +183,7 @@ class PostgreSQLBySourceTstStateBackendManager(
             table_name=PSQL_BY_SOURCE_TST_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
         self.pydantic_manager.create_table(
@@ -192,7 +192,7 @@ class PostgreSQLBySourceTstStateBackendManager(
             table_name=PSQL_BY_SOURCE_TST_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=False,
+            use_business_key_as_primary=False,
         )
 
     def read_processing_state(self) -> BySourceTstProcessingState | None:
@@ -320,7 +320,7 @@ class PostgreSQLBySourceTstStateBackendManager(
             table_name=PSQL_BY_SOURCE_TST_PLANNED_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
     def write_planned_processing_state(

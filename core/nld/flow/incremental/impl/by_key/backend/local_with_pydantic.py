@@ -135,6 +135,12 @@ class LocalByKeyPydanticStateBackendManager(
         keys: dict[str, ByKeySingleKeyState] = {}
 
         for batch in table.to_batches():
+            # State files written before the column existed lack it.
+            source_last_updated_at_column = (
+                batch.column("source_last_updated_at")
+                if "source_last_updated_at" in batch.schema.names
+                else None
+            )
             for row_idx in range(batch.num_rows):
                 name = batch.column("name")[row_idx].as_py()
                 parameters_str = batch.column("parameters")[row_idx].as_py()
@@ -162,6 +168,11 @@ class LocalByKeyPydanticStateBackendManager(
                         row_idx
                     ].as_py(),
                     parameters=parameters,
+                    source_last_updated_at=(
+                        source_last_updated_at_column[row_idx].as_py()
+                        if source_last_updated_at_column is not None
+                        else None
+                    ),
                 )
 
         return ByKeyState(keys=keys)
@@ -210,6 +221,7 @@ class LocalByKeyPydanticStateBackendManager(
                 "first_processed_at": ks.first_processed_at,
                 "source_deleted_at": ks.source_deleted_at,
                 "parameters": json.dumps(ks.parameters) if ks.parameters else None,
+                "source_last_updated_at": ks.source_last_updated_at,
             }
             for ks in state.keys.values()
         ]

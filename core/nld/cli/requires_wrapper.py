@@ -36,7 +36,12 @@ def nld_command(
             ),
         )
     )
-    pre_processing_kwargs: dict[str, Any] = {"with_project": with_project}
+    # Commands that hide their completion line keep their output clean,
+    # so they hide the start line and its parameters too.
+    pre_processing_kwargs: dict[str, Any] = {
+        "with_project": with_project,
+        "silent_start": silent_completion,
+    }
     if completion_label:
         pre_processing_kwargs["completion_label"] = completion_label
     if logger_formatter:

@@ -41,27 +41,27 @@ class NldBaseModelDuckDBManager(NldBaseModelManager):
     def _prepare_value(self, value: Any) -> Any:
         return self.structure_mapper.prepare_value_for_target(value)
 
-    def _create_functional_key_index(
+    def _create_business_key_index(
         self,
         structure: Structure,
         table_name: str,
         table_path: str,
-        use_functional_key_as_primary: bool,
+        use_business_key_as_primary: bool,
     ) -> None:
         from nld.structure import StructureCharacterisationDefinitionNames
 
-        if use_functional_key_as_primary:
+        if use_business_key_as_primary:
             return
 
-        functional_key = structure.get_characterisation(
-            StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY
+        business_key = structure.get_characterisation(
+            StructureCharacterisationDefinitionNames.BUSINESS_KEY
         )
-        if functional_key and functional_key.linked_fields:
-            constraint_name = f"{functional_key.name}_{table_name}".lower()
+        if business_key and business_key.linked_fields:
+            constraint_name = f"{business_key.name}_{table_name}".lower()
             self.connector.create_index(
                 index_name=constraint_name,
                 table_path=table_path,
-                columns=functional_key.linked_fields,
+                columns=business_key.linked_fields,
                 unique=False,
             )
 

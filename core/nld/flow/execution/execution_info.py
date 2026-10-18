@@ -176,7 +176,7 @@ class FlowStepExecutionInfo(NldBaseModel):
 class FlowExecutionInfo(NldBaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name"],
                 "name": "fk_flow_execution_info",
             }

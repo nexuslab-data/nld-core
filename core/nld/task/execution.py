@@ -1,9 +1,42 @@
+import re
 from datetime import datetime, timedelta
+from typing import Any
 
 import nld.utils.datetime_util as datetime_util
 from nld.pydantic import NldBaseModel
 from nld.utils import NldStrEnum
 from nld.utils.datetime_util import get_current_datetime
+from nld.utils.user_display import format_key_value_lines
+
+MASKED_PARAMETER_VALUE = "***"
+SENSITIVE_PARAMETER_NAME_PATTERN = re.compile(
+    r"password|secret|token|credential|private_key",
+    flags=re.IGNORECASE,
+)
+
+
+def _format_parameter_lines(parameters: dict[str, Any]) -> list[str]:
+    """Render the parameters an execution received, one aligned line each.
+
+    Unset options (``None`` or an empty multi-value option) are left out so
+    the block only shows what the run was given. Values whose name looks
+    like a secret are masked, as these lines end up in scheduler logs.
+
+    Example: ``{"name": "orders", "full": False, "namespace": None}``
+    renders ``["  full: False", "  name: orders"]``.
+    """
+    pairs: list[tuple[str, str]] = []
+    for name, value in sorted(parameters.items()):
+        if value is None or (isinstance(value, list | tuple) and not value):
+            continue
+        if SENSITIVE_PARAMETER_NAME_PATTERN.search(name):
+            display_value = MASKED_PARAMETER_VALUE
+        elif isinstance(value, list | tuple):
+            display_value = ", ".join(str(item) for item in value)
+        else:
+            display_value = str(value)
+        pairs.append((name, display_value))
+    return format_key_value_lines(pairs=pairs)
 
 
 class ExecutionStatus(NldStrEnum):
@@ -45,12 +78,20 @@ class ExecutionInfo(NldBaseModel):
     def get_execution_status(self) -> str:
         return ExecutionStatus.SUCCEEDED if self.success else ExecutionStatus.FAILED
 
-    def get_start_message(self) -> str:
+    def get_start_message(
+        self,
+        parameters: dict[str, Any] | None = None,
+    ) -> str:
+        """Build the start message, followed by the parameters when given."""
         started_at_str = datetime_util.format_timestamp_to_hour_string(self.started_at)
-        return (
+        message = (
             f"Execution `{self.exec_name}` started at {started_at_str} "
             f"with uuid {self.uuid}"
         )
+        parameter_lines = _format_parameter_lines(parameters=parameters or {})
+        if parameter_lines:
+            message += "\nParameters:\n" + "\n".join(parameter_lines)
+        return message
 
     def get_completion_message(self) -> str:
         status = (

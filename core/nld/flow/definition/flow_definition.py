@@ -1,8 +1,8 @@
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ConfigDict, field_validator, model_validator
 from pydantic import Field as PydanticField
-from pydantic import field_validator, model_validator
 
 from nld.flow.config import (
     ConnectorConfig,
@@ -11,9 +11,11 @@ from nld.flow.config import (
 )
 from nld.flow.definition.field_lineage import FieldLineage
 from nld.flow.definition.sql_config import SQLConfig
+from nld.flow.definition.write_strategy_options import WriteStrategyOptions
 from nld.flow.incremental.models import FlowIncrementalLogic, IncrementalConfig
 from nld.flow.quality.models import DataQualityChecksConfig
 from nld.flow.quality.service import validate_quality_checks
+from nld.flow.utils import FlowUpdateStrategies
 from nld.misc import EnvironmentVariableDefinition
 from nld.parameters import ExecutionParameter, create_model_dict
 from nld.pydantic import (
@@ -113,6 +115,10 @@ class DataFlowDefinition(NldNamedBaseModel):
     to initialize the task module.
     """
 
+    # A misspelled key would otherwise be silently dropped and its field left
+    # at the default, e.g. a misspelled write_strategy running as OVERWRITE.
+    model_config = ConfigDict(extra="forbid")
+
     task: str | None = None
     task_type: str | None = None
     state_backend_connector: StateBackendConnectorConfigWrapper | None = None
@@ -127,6 +133,7 @@ class DataFlowDefinition(NldNamedBaseModel):
     target_from_sources_mapping: dict[str, FieldLineage] | None = None
     target_structure: NldEntityReference[Structure] | None = None
     write_strategy: str | None = None
+    write_strategy_options: WriteStrategyOptions | None = None
     quality_checks: DataQualityChecksConfig | None = None
 
     @field_validator("target_from_sources_mapping", mode="before")
@@ -243,6 +250,29 @@ class DataFlowDefinition(NldNamedBaseModel):
             return {"primary": value}
         return value
 
+    @field_validator("write_strategy", mode="before")
+    @classmethod
+    def normalize_write_strategy(cls, value: Any) -> Any:
+        """Uppercase the write strategy so YAML capitalisation does not matter."""
+        if isinstance(value, str):
+            return value.upper()
+        return value
+
+    @field_validator("write_strategy")
+    @classmethod
+    def validate_write_strategy(cls, value: str | None) -> str | None:
+        """Reject write strategies outside the FlowUpdateStrategies vocabulary.
+
+        Whether the task type supports the strategy is still checked when the
+        flow runs, as seed flows only accept OVERWRITE, INSERT and UPSERT.
+        """
+        if value is not None and not FlowUpdateStrategies.is_valid(value):
+            raise ValueError(
+                f"Invalid write strategy '{value}': "
+                f"must be one of {', '.join(sorted(FlowUpdateStrategies.values()))}"
+            )
+        return value
+
     @model_validator(mode="after")
     def validate_task_and_task_type_mutually_exclusive(self) -> "DataFlowDefinition":
         """Ensure task and task_type are not both set."""
@@ -251,6 +281,25 @@ class DataFlowDefinition(NldNamedBaseModel):
                 "'task' and 'task_type' are mutually exclusive. "
                 "Use 'task' for a full module path or 'task_type' for "
                 "a shorthand type name, but not both."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_overwrite_mode_strategy(self) -> "DataFlowDefinition":
+        """Ensure ``overwrite_mode`` is only declared on an OVERWRITE flow.
+
+        An unset ``write_strategy`` counts as OVERWRITE, the default the
+        flow tasks apply; a declared one is already uppercased.
+        """
+        options = self.write_strategy_options
+        if options is None or options.overwrite_mode is None:
+            return self
+        write_strategy = self.write_strategy or FlowUpdateStrategies.OVERWRITE
+        if write_strategy != FlowUpdateStrategies.OVERWRITE:
+            raise ValueError(
+                f"'write_strategy_options.overwrite_mode' only applies to the "
+                f"'{FlowUpdateStrategies.OVERWRITE}' write strategy, "
+                f"not to '{self.write_strategy}'"
             )
         return self
 
@@ -386,7 +435,34 @@ class DataFlowDefinition(NldNamedBaseModel):
 
         self._check_quality_checks(errors=errors)
 
+        self._check_incremental_options(errors=errors)
+
         return len(errors) == 0, errors
+
+    def _check_incremental_options(self, errors: list[str]) -> None:
+        """Validate ``incremental.options`` against the type's options model.
+
+        The options model rejects unknown keys and invalid values, then
+        checks the options against the rest of the flow (e.g. that a
+        configured column exists on the target structure).
+        """
+        if self.incremental is None:
+            return
+        try:
+            definition = self.resolve_incremental_logic().definition
+        except Exception as exc:
+            errors.append(
+                f"Incremental type '{self.incremental.type}' cannot be "
+                f"resolved: {format_exception_chain(exc)}"
+            )
+            return
+        try:
+            options = definition.validate_options(options=self.incremental.options)
+        except ValueError as exc:
+            errors.append(f"Incremental options validation failed: {exc}")
+            return
+        if options is not None:
+            errors.extend(options.check_flow_coherence(data_flow_definition=self))
 
     def _check_quality_checks(self, errors: list[str]) -> None:
         """Validate the quality_checks block against the available rules.

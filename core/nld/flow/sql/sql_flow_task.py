@@ -1,7 +1,10 @@
 from typing import Any, ClassVar
 
+from sqlglot import exp
+
 from nld.connector.base.connector import SQLDataConnector
 from nld.flow.definition import DataFlowDefinition, NamespacedDataFlowDefinition
+from nld.flow.execution.decorator import track_flow_step
 from nld.flow.incremental.impl.no_increment.logic import (
     NO_INCREMENT_FLOW_INCREMENTAL_LOGIC,
 )
@@ -12,7 +15,10 @@ from nld.flow.sql.sql_file_resolver import (
     try_resolve_sql_file_path,
 )
 from nld.flow.sql.sql_glot_utils import build_technical_timestamps_query
-from nld.flow.sql.sql_query_resolver import render_sql_from_flow_definition
+from nld.flow.sql.sql_query_resolver import (
+    render_sql_from_flow_definition,
+    resolve_input_database_names,
+)
 from nld.flow.task.data_flow_task import DataFlowTask
 from nld.flow.utils import FlowStepCategory
 from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
@@ -86,7 +92,24 @@ class SQLFlowTask(DataFlowTask):
         """Execute the SQL flow using the configured write strategy."""
         self.target_connector.assert_connection_is_opened()
 
-        for statements, variables in self._resolve_all_hooks(hook_type="pre"):
+        write_strategy_name = self.data_flow_definition.write_strategy or "OVERWRITE"
+        write_strategy = get_write_strategy(
+            write_strategy_name,
+            write_strategy_options=self.data_flow_definition.write_strategy_options,
+        )
+        self._assert_strategy_incremental_compatible(write_strategy)
+
+        if self._has_nothing_to_process():
+            self.log_info(
+                "The incremental selection is empty: nothing to load, "
+                "no statement is executed on the target.",
+            )
+            return
+
+        for statements, variables in self._resolve_all_hooks(
+            hook_type="pre",
+            write_strategy=write_strategy,
+        ):
             self._execute_hook_statements(
                 statements=statements,
                 hook_label="PRE_HOOK",
@@ -94,14 +117,10 @@ class SQLFlowTask(DataFlowTask):
                 template_variables=variables,
             )
 
-        write_strategy_name = self.data_flow_definition.write_strategy or "OVERWRITE"
-
         sql_query = self._resolve_sql_query()
         sql_query = self._apply_incremental_filter(sql_query)
         table_path = f"{self.target_schema}.{self.data_flow_definition.name}"
 
-        write_strategy = get_write_strategy(write_strategy_name)
-        self._assert_strategy_incremental_compatible(write_strategy)
         target_structure = self._resolve_target_structure(write_strategy)
 
         self.log_info(
@@ -113,6 +132,9 @@ class SQLFlowTask(DataFlowTask):
             table_path=table_path,
             sql_query=sql_query,
             target_structure=target_structure,
+            target_scope_condition=self._resolve_target_scope_condition(
+                target_structure=target_structure,
+            ),
         )
 
         self._append_steps_from_results(
@@ -135,7 +157,10 @@ class SQLFlowTask(DataFlowTask):
             table_path=table_path,
         )
 
-        for statements, variables in self._resolve_all_hooks(hook_type="post"):
+        for statements, variables in self._resolve_all_hooks(
+            hook_type="post",
+            write_strategy=write_strategy,
+        ):
             self._execute_hook_statements(
                 statements=statements,
                 hook_label="POST_HOOK",
@@ -160,16 +185,92 @@ class SQLFlowTask(DataFlowTask):
         source query as deleted: an incrementally filtered (delta) source
         would mass-flag all untouched rows. The check runs even when the
         filter would no-op (no predecessors) — declaring ``incremental``
-        on such a flow is a configuration error either way.
+        on such a flow is a configuration error either way. The
+        incremental type may restrict the strategies further through its
+        ``allowed_write_strategies``, and DELETE_INSERT_SCOPED needs a
+        ``target_scoped`` type to know what to delete.
         """
-        if write_strategy.name != FlowUpdateStrategies.UPSERT_LOG_DEL:
-            return
+        if (
+            write_strategy.name == FlowUpdateStrategies.DEL_INS_SCOPED
+            and not self._is_target_scoped()
+        ):
+            raise ValueError(
+                f"Write strategy '{write_strategy.name}' requires an "
+                f"incremental type defining a target scope (e.g. "
+                f"'by_target_period') on flow '{self.data_flow_definition.name}'"
+            )
         if self.data_flow_definition.incremental is None:
             return
-        raise ValueError(
-            f"Write strategy '{write_strategy.name}' requires the full "
-            f"source extent and cannot be combined with an incremental "
-            f"configuration on flow '{self.data_flow_definition.name}'"
+        if write_strategy.name == FlowUpdateStrategies.UPSERT_LOG_DEL:
+            raise ValueError(
+                f"Write strategy '{write_strategy.name}' requires the full "
+                f"source extent and cannot be combined with an incremental "
+                f"configuration on flow '{self.data_flow_definition.name}'"
+            )
+        allowed_write_strategies = self.incremental_definition.allowed_write_strategies
+        if (
+            allowed_write_strategies is not None
+            and write_strategy.name not in allowed_write_strategies
+        ):
+            raise ValueError(
+                f"Write strategy '{write_strategy.name}' cannot be combined "
+                f"with the '{self.incremental_definition.category}' "
+                f"incremental type on flow '{self.data_flow_definition.name}'; "
+                f"use one of {', '.join(allowed_write_strategies)}"
+            )
+
+    def _is_target_scoped(self) -> bool:
+        """Whether the flow's incremental type owns a target scope per run."""
+        return (
+            self.data_flow_definition.incremental is not None
+            and self.incremental_definition.target_scoped
+        )
+
+    def _has_nothing_to_process(self) -> bool:
+        """Whether a target-scoped run selects no work at all."""
+        if not self._is_target_scoped():
+            return False
+        incremental_manager = self.state_manager.incremental_state_manager
+        return incremental_manager.has_nothing_to_process()
+
+    def _resolve_target_scope_condition(
+        self,
+        target_structure: Structure | None,
+    ) -> exp.Expression | None:
+        """Return the target rows owned by the run, as an SQL condition."""
+        if not self._is_target_scoped():
+            return None
+        incremental_manager = self.state_manager.incremental_state_manager
+        return incremental_manager.get_target_scope_condition(
+            target_structure=target_structure,
+            dialect=self._get_sqlglot_dialect(),
+        )
+
+    def _get_sqlglot_dialect(self) -> str:
+        """Return the sqlglot dialect of the target connector."""
+        return getattr(self.target_connector, "sqlglot_dialect", None) or "postgres"
+
+    @track_flow_step(
+        step_name="Pre-Processing For State - Retrieve Source State",
+        step_category=FlowStepCategory.PRE_PROCESSING_FOR_STATE,
+    )
+    def retrieve_source_state(self) -> None:
+        """Let the incremental type inspect the flow sources with SQL.
+
+        The query is resolved exactly as the run resolves it, so the type
+        can locate the MASTER predecessor tables it has to scan.
+        """
+        flow_definition = self.data_flow_definition
+        if flow_definition.incremental is None or not flow_definition.predecessors:
+            return
+        incremental_manager = self.state_manager.incremental_state_manager
+        if not incremental_manager.requires_source_state_retrieval():
+            return
+        incremental_manager.retrieve_source_state_from_sql(
+            sql_query=self._resolve_sql_query(),
+            predecessors=flow_definition.predecessors,
+            connector=self.target_connector,
+            input_database_names=resolve_input_database_names(flow_definition),
         )
 
     def _apply_incremental_filter(self, sql_query: str) -> str:
@@ -188,15 +289,18 @@ class SQLFlowTask(DataFlowTask):
         if flow_definition is None or flow_definition.incremental is None:
             return sql_query
 
-        if not flow_definition.predecessors:
+        # A target-scoped type deletes its scope before inserting, so an
+        # unfiltered query would duplicate every other period: its filter
+        # always runs and refuses a flow without MASTER predecessor.
+        if not flow_definition.predecessors and not self._is_target_scoped():
             return sql_query
 
         incremental_manager = self.state_manager.incremental_state_manager
-        dialect = getattr(self.target_connector, "sqlglot_dialect", None) or "postgres"
         return incremental_manager.apply_sql_filter(
             sql_query=sql_query,
             predecessors=flow_definition.predecessors,
-            dialect=dialect,
+            dialect=self._get_sqlglot_dialect(),
+            input_database_names=resolve_input_database_names(flow_definition),
         )
 
     def _load_technical_timestamps(
@@ -322,14 +426,21 @@ class SQLFlowTask(DataFlowTask):
     def _resolve_all_hooks(
         self,
         hook_type: str,
+        write_strategy: SQLWriteStrategy,
     ) -> list[tuple[list[str], dict[str, str]]]:
         """Resolve all hook statements from structure and flow levels.
 
         Structure-level hooks execute first, then flow-level hooks.
         Each hook type (pre/post) is resolved independently.
 
+        Structure-level hooks only apply when the run recreates the
+        target object — a view, or a table the replace OVERWRITE mode
+        rebuilds — since what they set up is lost with the old object.
+        A table kept across runs gets them from structure deploy.
+
         Args:
             hook_type: Either "pre" or "post".
+            write_strategy: the write strategy the run applies.
 
         Returns:
             A list of (statements, template_variables) tuples.
@@ -338,7 +449,9 @@ class SQLFlowTask(DataFlowTask):
 
         if self.data_flow_definition.target_structure is not None:
             target_structure = self.data_flow_definition.resolve_target_structure()
-            if target_structure.is_view():
+            if target_structure.is_view() or write_strategy.recreates_target(
+                self.target_connector,
+            ):
                 hook_getter = getattr(
                     target_structure,
                     f"get_all_{hook_type}_deployment_sql_hooks",

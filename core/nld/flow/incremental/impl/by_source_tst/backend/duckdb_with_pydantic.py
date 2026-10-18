@@ -32,7 +32,7 @@ DUCKDB_BY_SOURCE_TST_PROCESSING_STATE_TABLE_NAME = (
 class BySourceTstStateRow(NldBaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name"],
                 "name": "fk_by_source_tst_state",
             }
@@ -59,7 +59,7 @@ class BySourceTstStateRow(NldBaseModel):
 class BySourceTstProcessingStateRow(NldBaseModel):
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name"],
                 "name": "fk_by_source_tst_processing_state",
             }
@@ -138,7 +138,7 @@ class DuckDBBySourceTstStateBackendManager(
             table_name=DUCKDB_BY_SOURCE_TST_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
         self.pydantic_manager.create_table(
@@ -147,7 +147,7 @@ class DuckDBBySourceTstStateBackendManager(
             table_name=DUCKDB_BY_SOURCE_TST_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=False,
+            use_business_key_as_primary=False,
         )
 
     def read_current_state(self) -> BySourceTstState:

@@ -48,9 +48,16 @@ class EnvironmentsConfig(NldBaseModel):
     values: dict[str, EnvironmentConfig] = Field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "EnvironmentsConfig":
+    def from_dict(
+        cls,
+        raw: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> "EnvironmentsConfig":
         """Build an EnvironmentsConfig from a project dict's ``environments`` block."""
-        return cls.model_validate(raw or {})
+        return cls.model_validate(
+            raw or {},
+            context=context,
+        )
 
     def get_environment_names(self) -> list[str]:
         """Return all declared environment names."""

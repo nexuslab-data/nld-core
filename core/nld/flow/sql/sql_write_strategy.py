@@ -1,8 +1,11 @@
 import abc
 from typing import Any
 
+from sqlglot import exp
+
 from nld.connector.base.connector import SQLDataConnector
 from nld.connector.base.query import QueryExecResult
+from nld.flow.definition.write_strategy_options import WriteStrategyOptions
 from nld.flow.utils.flow_update_strategy import FlowUpdateStrategies
 from nld.flow.utils.lifecycle_field_resolution import resolve_upsert_field_params
 from nld.structure import Structure
@@ -38,6 +41,10 @@ class SQLWriteStrategy(abc.ABC):
         """The database object type produced by this strategy."""
         return "TABLE"
 
+    def recreates_target(self, connector: SQLDataConnector[Any]) -> bool:
+        """Whether executing the strategy drops and recreates the target table."""
+        return False
+
     @abc.abstractmethod
     def execute(
         self,
@@ -45,6 +52,7 @@ class SQLWriteStrategy(abc.ABC):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         """Execute the write strategy and return a list of query execution results.
 
@@ -54,6 +62,9 @@ class SQLWriteStrategy(abc.ABC):
             sql_query: the SELECT query providing the data.
             target_structure: resolved target structure with column
                 and primary key information (required for some strategies).
+            target_scope_condition: condition selecting the target rows
+                the run owns, supplied by the incremental type (required
+                by scoped strategies, ignored by the others).
 
         Returns:
             A list of QueryExecResult for each query executed. On failure,
@@ -128,6 +139,7 @@ class OverwriteStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -146,6 +158,37 @@ class OverwriteStrategy(SQLWriteStrategy):
         )
         results.append(insert_result)
         return results
+
+
+class ReplaceOverwriteStrategy(OverwriteStrategy):
+    """CREATE OR REPLACE TABLE ... AS SELECT, or the engine equivalent.
+
+    The OVERWRITE strategy with ``overwrite_mode: replace``. The target
+    content is replaced atomically: readers keep the previous content
+    until the new one is committed, and a failed load leaves it in
+    place. The connector picks the engine mechanism (native CREATE OR
+    REPLACE TABLE, transactional rebuild, or transactional TRUNCATE +
+    INSERT on PostgreSQL), see ``replace_table_from_query``.
+    """
+
+    def recreates_target(self, connector: SQLDataConnector[Any]) -> bool:
+        return connector.replace_table_recreates_table
+
+    def execute(
+        self,
+        connector: SQLDataConnector[Any],
+        table_path: str,
+        sql_query: str,
+        target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
+    ) -> list[QueryExecResult]:
+        if target_structure is None:
+            raise ValueError("target_structure is required for this strategy")
+        return connector.replace_table_from_query(
+            table_path=table_path,
+            sql_query=sql_query,
+            structure=target_structure,
+        )
 
 
 class ViewStrategy(SQLWriteStrategy):
@@ -174,6 +217,7 @@ class ViewStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -207,6 +251,7 @@ class InsertStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -252,6 +297,7 @@ class UpsertStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -299,6 +345,7 @@ class DeleteInsertStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -309,6 +356,61 @@ class DeleteInsertStrategy(SQLWriteStrategy):
             table_path=table_path,
             sql_query=sql_query,
             key_columns=pk_columns,
+        )
+        results.append(delete_result)
+        if delete_result.failed():
+            return results
+
+        insert_result = connector.insert_into_from_query(
+            table_path=table_path,
+            sql_query=sql_query,
+            column_list=column_list,
+        )
+        results.append(insert_result)
+        return results
+
+
+class DeleteInsertScopedStrategy(SQLWriteStrategy):
+    """DELETE the target scope + INSERT.
+
+    Deletes every target row inside the scope owned by the run — the
+    condition supplied by the incremental type, e.g. the periods of a
+    by_target_period flow — then inserts all rows from the query. Unlike
+    DELETE_INSERT, rows that disappeared from the source inside the
+    scope are removed too, and no primary key is required.
+
+    The delete and the insert are separate statements: a failure between
+    them leaves the scope empty until the flow is rerun.
+    """
+
+    @property
+    def name(self) -> str:
+        return FlowUpdateStrategies.DEL_INS_SCOPED
+
+    @property
+    def requires_target_structure(self) -> bool:
+        return True
+
+    def execute(
+        self,
+        connector: SQLDataConnector[Any],
+        table_path: str,
+        sql_query: str,
+        target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
+    ) -> list[QueryExecResult]:
+        if target_scope_condition is None:
+            raise ValueError(
+                f"Write strategy '{self.name}' requires an incremental type "
+                f"defining a target scope (e.g. 'by_target_period')"
+            )
+        results: list[QueryExecResult] = []
+
+        column_list = self._get_column_list(target_structure)
+
+        delete_result = connector.delete_where(
+            table_path=table_path,
+            condition=target_scope_condition,
         )
         results.append(delete_result)
         if delete_result.failed():
@@ -353,6 +455,7 @@ class UpsertLogicalDeleteStrategy(SQLWriteStrategy):
         table_path: str,
         sql_query: str,
         target_structure: Structure | None = None,
+        target_scope_condition: exp.Expression | None = None,
     ) -> list[QueryExecResult]:
         results: list[QueryExecResult] = []
 
@@ -410,15 +513,25 @@ _STRATEGY_MAP: dict[str, SQLWriteStrategy] = {
     FlowUpdateStrategies.INSERT: InsertStrategy(),
     FlowUpdateStrategies.UPSERT: UpsertStrategy(),
     FlowUpdateStrategies.DEL_INS: DeleteInsertStrategy(),
+    FlowUpdateStrategies.DEL_INS_SCOPED: DeleteInsertScopedStrategy(),
     FlowUpdateStrategies.UPSERT_LOG_DEL: UpsertLogicalDeleteStrategy(),
 }
 
 
-def get_write_strategy(strategy_name: str) -> SQLWriteStrategy:
+_REPLACE_OVERWRITE_STRATEGY = ReplaceOverwriteStrategy()
+
+
+def get_write_strategy(
+    strategy_name: str,
+    write_strategy_options: WriteStrategyOptions | None = None,
+) -> SQLWriteStrategy:
     """Get the write strategy instance for the given strategy name.
 
     Args:
         strategy_name: the strategy name matching a FlowUpdateStrategies value.
+        write_strategy_options: the flow's write strategy options; an
+            ``overwrite_mode: replace`` turns OVERWRITE into its replace
+            variant.
 
     Returns:
         The corresponding SQLWriteStrategy instance.
@@ -432,4 +545,10 @@ def get_write_strategy(strategy_name: str) -> SQLWriteStrategy:
             f"Unknown write strategy: '{strategy_name}'. "
             f"Valid strategies: {list(_STRATEGY_MAP.keys())}"
         )
+    if (
+        strategy.name == FlowUpdateStrategies.OVERWRITE
+        and write_strategy_options is not None
+        and write_strategy_options.is_overwrite_replace()
+    ):
+        return _REPLACE_OVERWRITE_STRATEGY
     return strategy

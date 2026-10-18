@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from nld.flow.backend.s3_blob_storage import S3BackendMixin
+from nld.flow.backend.utils import BackendStandardFolderNames
 from nld.flow.incremental.backend.plan import (
     BackendStatePlanRow,
     row_to_state_plan,
@@ -16,6 +18,7 @@ from nld.flow.incremental.backend.s3_blob_storage.schema import (
     get_state_plans_index_schema,
 )
 from nld.flow.incremental.models import FlowStatePlan
+from nld.utils.datetime_util import COMPACT_DATETIME_FORMAT
 
 STATE_PLANS_SUB_FOLDER = "plans"
 STATE_PLANS_INDEX_BASE_NAME = "state_plans"
@@ -103,6 +106,52 @@ class S3IncrementalBackendMixin(S3BackendMixin):
     def _state_plans_index_local_path(self) -> Path:
         self.local_state_dir.mkdir(parents=True, exist_ok=True)
         return self.local_state_dir / self.state_plans_index_file_name
+
+    # ---- Per-run state files, shared by the incremental types. ----
+
+    def _latest_run_state_file_remote_path(self, file_name: str) -> str | None:
+        """Return the newest ``{s3_root}/<timestamp>/state/<file_name>``.
+
+        Lists the run folders directly under ``s3_root`` (one non-recursive
+        listing, so the runs' large ``data/`` folders are not walked), keeps
+        those whose name parses as a run timestamp, and returns the file in
+        the greatest one — or ``None`` when none has been written.
+        """
+        run_folders = sorted(
+            folder
+            for folder in self._list_run_folder_names()
+            if self._is_run_folder(folder)
+        )
+        for folder in reversed(run_folders):
+            remote_path = (
+                f"{self.s3_root_path}/{folder}"
+                f"/{BackendStandardFolderNames.STATE}/{file_name}"
+            )
+            if self.backend_connector.check_if_file_exists(
+                obj_storage_path=remote_path,
+            ):
+                return remote_path
+        return None
+
+    def _list_run_folder_names(self) -> list[str]:
+        """List the immediate child folder names directly under ``s3_root``."""
+        root = self.s3_root_path.rstrip("/")
+        blobs = self.backend_connector._get_blobs_list(prefix=f"{root}/")
+        names: list[str] = []
+        for blob in blobs:
+            name = blob[len(root) :].strip("/").split("/")[0]
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _is_run_folder(folder_name: str) -> bool:
+        """Whether ``folder_name`` is a compact run timestamp, not a stray folder."""
+        try:
+            datetime.strptime(folder_name, COMPACT_DATETIME_FORMAT)
+        except ValueError:
+            return False
+        return True
 
     # ---- State-plan persistence primitives. ----
 

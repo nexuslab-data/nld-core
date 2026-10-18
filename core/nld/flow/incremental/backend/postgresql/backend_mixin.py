@@ -65,7 +65,7 @@ class PostgreSQLIncrementalBackendMixin(PostgreSQLBackendMixin):
             table_name=PSQL_INCREMENTAL_PLANS_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
         self._ensure_planned_processing_state_table_exists()
 

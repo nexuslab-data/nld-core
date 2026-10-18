@@ -2,7 +2,7 @@ import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, cast, get_args, get_origin
+from typing import Any, get_args, get_origin
 from uuid import UUID
 
 from nld.connector.sqlite.connector_definition import SQLiteDataTypes
@@ -103,28 +103,17 @@ class SQLitePydanticStructureMapper(BasePydanticStructureMapper):
                 )
             )
 
-        model_config = getattr(model_class, "model_config", None)
-        json_schema_extra = (
-            model_config.get("json_schema_extra") if model_config else None
-        )
-        if isinstance(json_schema_extra, dict):
-            functional_key = json_schema_extra.get("functional_key")
-            if isinstance(functional_key, dict):
-                fields = cast(list[str], functional_key.get("fields", []))
-                name = cast(
-                    str,
-                    functional_key.get("name", f"FUK_{model_class.__name__}"),
+        business_key = cls.get_business_key(model_class)
+        if business_key is not None:
+            structure.add_characterisation(
+                StructureCharacterisation(
+                    characterisation=(
+                        StructureCharacterisationDefinitionNames.BUSINESS_KEY
+                    ),
+                    name=business_key.name,
+                    linked_fields=business_key.field_names,
                 )
-                if fields:
-                    structure.add_characterisation(
-                        StructureCharacterisation(
-                            characterisation=(
-                                StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY
-                            ),
-                            name=name,
-                            linked_fields=[str(field) for field in fields],
-                        )
-                    )
+            )
 
         return structure
 

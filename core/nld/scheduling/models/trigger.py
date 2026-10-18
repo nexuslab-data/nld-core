@@ -22,7 +22,8 @@ class FlowPrecondition(NldBaseModel):
     """An upstream task that must reach a terminal state before this runs.
 
     ``name`` references another FlowTask entity — a task's trigger can depend
-    on another task's outcome.
+    on another task's outcome. A bare local ``name`` is resolved in the
+    declaring task's namespace first, then project-wide.
 
     When ``external`` is False (the default) the reference is resolved against
     the local registry and a dangling predecessor is a load-time error. When

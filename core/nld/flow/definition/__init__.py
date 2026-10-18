@@ -8,6 +8,7 @@ from .flow_definition import (
     resolve_master_predecessors,
 )
 from .sql_config import SQLConfig
+from .write_strategy_options import WriteStrategyOptions
 
 __all__ = [
     "DEFAULT_FLOW_TASK_TYPES",
@@ -18,4 +19,5 @@ __all__ = [
     "NamespacedDataFlowDefinition",
     "SQLConfig",
     "resolve_master_predecessors",
+    "WriteStrategyOptions",
 ]

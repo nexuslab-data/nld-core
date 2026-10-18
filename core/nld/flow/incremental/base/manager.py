@@ -4,7 +4,9 @@ import abc
 import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from nld.connector.base.connector import DataConnector
+from sqlglot import exp
+
+from nld.connector.base.connector import DataConnector, SQLDataConnector
 from nld.exceptions import MissingMandatoryArgumentException
 from nld.flow.definition.flow_definition import DataFlowStructurePredecessor
 from nld.flow.incremental.base.sql_filter_manager import IncrementalSqlFilterManager
@@ -23,6 +25,7 @@ from nld.parameters import (
     ExecutionParameterDefinition,
     apply_default_values_to_parameters,
 )
+from nld.structure import Structure
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.mixin import NldMixIn
 
@@ -745,6 +748,54 @@ class IncrementalStateManager[
         state_plan.status_changed_at = get_current_datetime()
         backend.write_state_plan(state_plan=state_plan)
 
+    def requires_source_state_retrieval(self) -> bool:
+        """Whether this run must retrieve the source state before planning.
+
+        Defaults to the definition flag, which is the envelope of the type.
+        Types whose need depends on the resolved strategy or on the flow
+        options override it, so a run that never reads the source neither
+        scans it nor asks for the source-request authorization.
+        """
+        return self.flow_incremental_logic.definition.requires_source_state_retrieval
+
+    def retrieve_source_state_from_sql(
+        self,
+        sql_query: str,
+        predecessors: dict[str, DataFlowStructurePredecessor],
+        connector: SQLDataConnector[Any],
+        input_database_names: dict[str, str] | None = None,
+    ) -> None:
+        """Retrieve the source state by querying the sources of a SQL flow.
+
+        Called by SQL flow tasks when ``requires_source_state_retrieval``
+        holds. The default is a no-op that keeps the historical behaviour
+        of an empty source-state hook; types able to inspect their sources
+        with SQL override it and call ``set_source_state``.
+        ``input_database_names`` maps each predecessor key to its declared
+        database, as in ``apply_sql_filter``.
+        """
+
+    def has_nothing_to_process(self) -> bool:
+        """Whether the computed processing state selects no work at all.
+
+        A SQL flow of a ``target_scoped`` definition skips its write when
+        True, so an empty selection never degrades into an unfiltered load.
+        """
+        return False
+
+    def get_target_scope_condition(
+        self,
+        target_structure: Structure | None,
+        dialect: str,
+    ) -> exp.Expression | None:
+        """Return the condition selecting the target rows this run owns.
+
+        Scoped write strategies delete the rows matching it before the
+        insert. Only consulted for definitions declaring ``target_scoped``;
+        None means the type defines no target scope.
+        """
+        return None
+
     @property
     @abc.abstractmethod
     def sql_filter_manager(self) -> IncrementalSqlFilterManager:
@@ -756,12 +807,14 @@ class IncrementalStateManager[
         sql_query: str,
         predecessors: dict[str, DataFlowStructurePredecessor],
         dialect: str,
+        input_database_names: dict[str, str] | None = None,
     ) -> str:
         """Apply incremental WHERE clause filtering to the SQL query."""
         return self.sql_filter_manager.apply_filter(
             sql_query=sql_query,
             predecessors=predecessors,
             dialect=dialect,
+            input_database_names=input_database_names,
         )
 
     def get_deleted_state(self) -> None:

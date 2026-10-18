@@ -1,6 +1,8 @@
 from functools import update_wrapper
 from typing import Any
 
+import click
+
 from nld.cli.cli_events import CommandCompleted, CommandRuntimeError
 from nld.cli.cli_exceptions import ExceptionExit
 from nld.flow.execution import FlowExecutionInfo, FlowExecutionInfoWrapper
@@ -264,6 +266,10 @@ def manage_flow_cli_exception(
                 success = f(*args, **kwargs)
                 if isinstance(success, FlowExecutionInfoWrapper):
                     _handle_execution_result(batch_info=success)
+            except click.exceptions.Exit:
+                # click's Exit subclasses RuntimeError: a command ending
+                # through ctx.exit chose its exit code and did not fail.
+                raise
             except ExceptionExit:
                 exception_occurred = True
                 raise

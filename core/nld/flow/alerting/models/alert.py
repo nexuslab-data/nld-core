@@ -24,14 +24,21 @@ class FlowAlertItem(NldBaseModel):
 
 
 class FlowAlert(NldBaseModel):
-    """What nld reports about one flow execution."""
+    """What nld reports about one flow execution, or about one flow command.
 
+    An execution alert names its flow (``flow_namespace``, ``flow_name``). A
+    command covering many flows at once, such as ``flow deploy``, has no
+    single flow to name, so its alert names the command instead. ``flow_uid``
+    is the nld run a reader looks up: the flow execution, or the deployment.
+    """
+
+    command: str | None = None
     environment: str | None = None
     execution_reference: str | None = None
     execution_url: str | None = None
     execution_status: str
-    flow_name: str
-    flow_namespace: str
+    flow_name: str | None = None
+    flow_namespace: str | None = None
     flow_uid: str
     items: list[FlowAlertItem] = Field(default_factory=list)
     level: FlowAlertLevel
@@ -39,9 +46,16 @@ class FlowAlert(NldBaseModel):
     summary: str
 
     @property
-    def flow_path(self) -> str:
-        """The flow's dotted identity, as a reader knows it."""
-        return f"{self.flow_namespace}.{self.flow_name}"
+    def subject(self) -> str:
+        """What the alert is about, as a reader knows it.
+
+        The flow's dotted identity for an execution, e.g.
+        ``hltb.refinement.refined_video_games_hltb_game``; the command line
+        otherwise, e.g. ``nld flow deploy --namespace hltb``.
+        """
+        if self.flow_name is not None and self.flow_namespace is not None:
+            return f"{self.flow_namespace}.{self.flow_name}"
+        return f"nld {self.command}" if self.command else "nld"
 
 
 class FlowExecutionOutcome(NldBaseModel):

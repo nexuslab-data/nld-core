@@ -21,6 +21,8 @@ class ConnectorDeployCapabilities(NldBaseModel):
     with a clear message, never a silent skip.
     ``comparable_data_type_aliases`` carries the engine's own type
     spellings mapped to their canonical comparable form.
+    ``default_data_type_sizes`` maps a type to the ``(length,
+    precision)`` the engine applies to a bare declaration of it.
     ``enforce_field_order_default`` is the effective value of a
     structure's ``enforce_field_order`` when it does not declare one
     explicitly (``None``): engines where a mismatched physical order
@@ -52,6 +54,7 @@ class ConnectorDeployCapabilities(NldBaseModel):
     detects_dependent_views: bool = True
     comparable_characterisations: list[str]
     comparable_data_type_aliases: dict[str, str] = {}
+    default_data_type_sizes: dict[str, tuple[int, int]] = {}
     enforce_field_order_default: bool
     rename_column_in_place: bool
     rename_table_in_place: bool
@@ -77,3 +80,43 @@ def normalize_comparable_data_type(
     if capabilities is None:
         return base
     return capabilities.comparable_data_type_aliases.get(base, base)
+
+
+def normalize_comparable_type_size(
+    data_type: str,
+    length: int,
+    precision: int,
+    capabilities: ConnectorDeployCapabilities | None = None,
+) -> tuple[int, int]:
+    """Normalize a field size to its canonical comparable form.
+
+    A bare declaration takes the engine default — Snowflake ``VARCHAR``
+    is ``VARCHAR(16777216)`` and ``INTEGER`` is ``NUMBER(38,0)`` — and
+    the size the engine applies is reported as ``(0, 0)`` when it is
+    the default of the comparable type. A bare and an explicit default
+    spelling therefore compare equal, and a bare declaration keeps the
+    ``(0, 0)`` size its recorded schema snapshots were hashed with.
+
+    The declared type is looked up before its comparable alias, since
+    an alias can merge types with distinct defaults: a bare Snowflake
+    ``CHAR`` is ``VARCHAR(1)``, so it normalizes to ``(1, 0)``.
+
+    Example: ``("INTEGER", 0, 0)`` and ``("NUMBER", 38, 0)`` both
+    normalize to ``(0, 0)`` on Snowflake, ``("NUMBER", 18, 2)`` stays.
+    """
+    if capabilities is None:
+        return length, precision
+    default_sizes = capabilities.default_data_type_sizes
+    comparable_type = normalize_comparable_data_type(
+        data_type,
+        capabilities=capabilities,
+    )
+    size = (length, precision)
+    if size == (0, 0):
+        upper_type = data_type.upper().strip() if data_type else ""
+        declared_type = ANSI_COMPARABLE_DATA_TYPE_ALIASES.get(upper_type, upper_type)
+        size = default_sizes.get(
+            declared_type,
+            default_sizes.get(comparable_type, size),
+        )
+    return (0, 0) if size == default_sizes.get(comparable_type) else size

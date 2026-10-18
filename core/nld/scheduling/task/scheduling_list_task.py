@@ -57,14 +57,18 @@ class SchedulingListTask(StandardTask):
             "Environments",
         ]
         rows: list[list[str]] = []
-        for key in sorted(flow_tasks):
-            namespaced = flow_tasks[key]
+        # Same-name tasks from several namespaces are listed side by side,
+        # so the plain name is shown next to its namespace column.
+        for namespaced in sorted(
+            flow_tasks.values(),
+            key=lambda item: (item.model.name, str(item.namespace)),
+        ):
             flow_task = namespaced.model
             if self.environment and not flow_task.is_active_in(self.environment):
                 continue
             rows.append(
                 [
-                    key,
+                    flow_task.name,
                     str(namespaced.namespace),
                     str(flow_task.flow),
                     self._frequency(flow_task=flow_task),

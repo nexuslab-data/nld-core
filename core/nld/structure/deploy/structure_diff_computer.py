@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from nld.connector.base.deploy_capabilities import (
     ConnectorDeployCapabilities,
     normalize_comparable_data_type,
+    normalize_comparable_type_size,
 )
 from nld.structure.deploy.structure_diff import (
     CharacterisationDiff,
@@ -249,6 +250,18 @@ class StructureDiffComputer:
             data_type=current.data_type,
             capabilities=self._capabilities,
         )
+        desired_length, desired_precision = normalize_comparable_type_size(
+            desired.data_type,
+            length=desired.length,
+            precision=desired.precision,
+            capabilities=self._capabilities,
+        )
+        current_length, current_precision = normalize_comparable_type_size(
+            current.data_type,
+            length=current.length,
+            precision=current.precision,
+            capabilities=self._capabilities,
+        )
         desired_nullable = False if is_primary_key else not desired.is_mandatory()
         current_nullable = not current.is_mandatory()
         desired_default = (
@@ -259,8 +272,8 @@ class StructureDiffComputer:
         )
 
         has_type_change = desired_type != current_type
-        has_length_change = desired.length != current.length
-        has_precision_change = desired.precision != current.precision
+        has_length_change = desired_length != current_length
+        has_precision_change = desired_precision != current_precision
         has_nullable_change = desired_nullable != current_nullable
         # Compared only when the asset declares a default: a live
         # default the YAML does not manage (e.g. a serial sequence)
@@ -283,17 +296,24 @@ class StructureDiffComputer:
         # The diff carries the declared spellings: the comparable
         # forms decide *whether* the type changed, never what the
         # rendered ALTER statement says.
+        # A type or size change carries the whole type on both sides:
+        # the ALTER renders a size-only change from the live type, and
+        # needs length and precision together, since NUMBER(20) on a
+        # NUMBER(18,2) column would also drop the scale.
+        has_column_type_change = (
+            has_type_change or has_length_change or has_precision_change
+        )
         return FieldDiff(
             action=DiffAction.MODIFY,
             field_name=desired.name,
-            data_type_from=current.data_type if has_type_change else None,
+            data_type_from=current.data_type if has_column_type_change else None,
             data_type_to=desired.data_type if has_type_change else None,
             default_from=current_default if has_default_change else None,
             default_to=desired_default if has_default_change else None,
-            length_from=current.length if has_length_change else None,
-            length_to=desired.length if has_length_change else None,
-            precision_from=current.precision if has_precision_change else None,
-            precision_to=desired.precision if has_precision_change else None,
+            length_from=current.length if has_column_type_change else None,
+            length_to=desired.length if has_column_type_change else None,
+            precision_from=current.precision if has_column_type_change else None,
+            precision_to=desired.precision if has_column_type_change else None,
             nullable_from=current_nullable if has_nullable_change else None,
             nullable_to=desired_nullable if has_nullable_change else None,
         )

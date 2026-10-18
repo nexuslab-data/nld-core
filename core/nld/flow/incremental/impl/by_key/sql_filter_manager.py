@@ -33,6 +33,7 @@ class ByKeySqlFilterManager(IncrementalSqlFilterManager):
         sql_query: str,
         predecessors: dict[str, DataFlowStructurePredecessor],
         dialect: str,
+        input_database_names: dict[str, str] | None = None,
     ) -> str:
         """Apply key-based incremental filtering to a SQL query."""
         if self.processing_state.strategy == FlowLoadingStrategies.FULL:
@@ -67,6 +68,7 @@ class ByKeySqlFilterManager(IncrementalSqlFilterManager):
             table_node = find_table_reference(
                 parsed,
                 table_name=master_structure.name,
+                database_name=(input_database_names or {}).get(predecessor_name),
             )
             if table_node is None:
                 raise ValueError(

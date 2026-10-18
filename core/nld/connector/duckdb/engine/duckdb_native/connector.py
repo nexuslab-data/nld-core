@@ -189,7 +189,11 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
 
         # Start an explicit transaction for non-SELECT so that
         # commit/rollback are effective (DuckDB auto-commits otherwise).
-        if expected_output != QueryOutputType.DATASET:
+        # Inside a transaction block the block owns the transaction.
+        owns_transaction = (
+            expected_output != QueryOutputType.DATASET and not self._in_transaction
+        )
+        if owns_transaction:
             self.connection.begin()
 
         try:
@@ -235,7 +239,7 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
                     else "Statement executed successfully."
                 )
 
-            if expected_output != QueryOutputType.DATASET:
+            if owns_transaction:
                 self.connection.commit()
 
             result = QueryExecResult(
@@ -253,7 +257,7 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
             )
             return result
         except BaseException as e:
-            if expected_output != QueryOutputType.DATASET:
+            if owns_transaction:
                 self.connection.rollback()
             if isinstance(e, duckdb.Error):
                 self.log_execution_error(e)
@@ -413,6 +417,17 @@ class DuckDBSQLConnector(SQLDataConnector[DuckDBConnectionWrapper]):
             self.connection.rollback()
             raise
         return results
+
+    # Transaction block operations
+
+    def _begin_transaction(self) -> None:
+        self.connection.begin()
+
+    def _commit_transaction(self) -> None:
+        self.connection.commit()
+
+    def _rollback_transaction(self) -> None:
+        self.connection.rollback()
 
     # DDL operations
 

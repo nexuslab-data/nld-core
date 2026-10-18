@@ -3,6 +3,7 @@ from __future__ import annotations
 from nld.connector.base.deploy_capabilities import (
     ConnectorDeployCapabilities,
     normalize_comparable_data_type,
+    normalize_comparable_type_size,
 )
 from nld.exceptions import NldRuntimeException
 from nld.pydantic.base_model import NldBaseModel
@@ -62,16 +63,27 @@ def _comparable_fields(
     snapshot: StructureSchemaSnapshot,
     capabilities: ConnectorDeployCapabilities | None = None,
 ) -> dict[str, tuple[str, int, int, bool]]:
-    """Index the snapshot fields by name with their physical attributes."""
+    """Index the snapshot fields by name with their physical attributes.
+
+    The size is normalized again on read: a snapshot recorded before
+    sizes were stored in their comparable form may carry an explicit
+    default (``VARCHAR(16777216)``) the live read-back reports bare.
+    """
 
     def field_key(field: StructureSchemaSnapshotField) -> tuple[str, int, int, bool]:
+        length, precision = normalize_comparable_type_size(
+            field.data_type,
+            length=field.length,
+            precision=field.precision,
+            capabilities=capabilities,
+        )
         return (
             normalize_comparable_data_type(
                 data_type=field.data_type,
                 capabilities=capabilities,
             ),
-            field.length,
-            field.precision,
+            length,
+            precision,
             field.nullable,
         )
 

@@ -598,14 +598,14 @@ class Structure(NldNamedBaseModel):
             StructureCharacterisationDefinitionNames.TECHNICAL_UNIQUE_KEY
         )
 
-    def has_functional_unique_key(self) -> bool:
-        """Check if this structure has a functional unique key."""
-        return len(self.get_functional_unique_key_fields()) > 0
+    def has_business_unique_key(self) -> bool:
+        """Check if this structure has a business unique key."""
+        return len(self.get_business_unique_key_fields()) > 0
 
-    def get_functional_unique_key_fields(self) -> list[Field]:
-        """Get the list of fields contained in the structure functional key."""
+    def get_business_unique_key_fields(self) -> list[Field]:
+        """Get the list of fields contained in the structure business key."""
         return self._get_fields_associated_to_unique_structure_characterisation(
-            StructureCharacterisationDefinitionNames.FUNCTIONAL_UNIQUE_KEY
+            StructureCharacterisationDefinitionNames.BUSINESS_UNIQUE_KEY
         )
 
     def get_last_update_tst_field(

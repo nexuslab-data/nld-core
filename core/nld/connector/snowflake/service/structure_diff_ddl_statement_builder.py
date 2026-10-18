@@ -190,7 +190,11 @@ class SnowflakeStructureDiffDDLStatementBuilder(BaseStructureDiffDDLStatementBui
                         schema=schema_name,
                         table=table_name,
                         column_name=field_diff.field_name,
-                        data_type=field_diff.data_type_to or "TEXT",
+                        data_type=self._ddl_builder.build_type_expression(
+                            data_type=field_diff.data_type_to or "TEXT",
+                            length=field_diff.length_to or 0,
+                            precision=field_diff.precision_to or 0,
+                        ),
                         not_null=field_diff.nullable_to is False,
                         default_value=field_diff.default_to,
                     ),
@@ -228,6 +232,9 @@ class SnowflakeStructureDiffDDLStatementBuilder(BaseStructureDiffDDLStatementBui
                         description=(
                             f"Change type of {field_diff.field_name} "
                             f"from {field_diff.data_type_from} to {type_expr}"
+                            if field_diff.data_type_to is not None
+                            else f"Change size of {field_diff.field_name} "
+                            f"to {type_expr}"
                         ),
                     )
                 )

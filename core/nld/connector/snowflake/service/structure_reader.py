@@ -2,11 +2,15 @@ from typing import Any
 
 import pandas as pd
 
+from nld.connector.base import normalize_comparable_type_size
 from nld.connector.base.exceptions import QueryExecutionException
 from nld.connector.base.structure_reader import (
     SQLConnectorStructureReader,
     normalize_column_default,
     parse_view_dependencies,
+)
+from nld.connector.snowflake.service.deploy_capabilities import (
+    SNOWFLAKE_DEPLOY_CAPABILITIES,
 )
 from nld.connector.snowflake.snowflake_connector import SnowflakeConnector
 from nld.connector.snowflake.snowflake_structure import SnowflakeStructure
@@ -24,6 +28,10 @@ from nld.structure.structure.structure_characterisation_def import (
 # is almost certainly truncated.
 _SHOW_ROW_CAP = 10_000
 
+# Types whose fractional-seconds precision INFORMATION_SCHEMA reports
+# in DATETIME_PRECISION.
+_DATETIME_DATA_TYPES = {"TIME", "TIMESTAMP_LTZ", "TIMESTAMP_NTZ", "TIMESTAMP_TZ"}
+
 
 def _guard_show_row_cap(df: pd.DataFrame, query: str) -> None:
     """Fail loudly when a SHOW command hits Snowflake's row cap.
@@ -38,6 +46,45 @@ def _guard_show_row_cap(df: pd.DataFrame, query: str) -> None:
             f"Snowflake returned {_SHOW_ROW_CAP} rows — the SHOW result "
             f"is at its row cap and likely truncated: {query}",
         )
+
+
+def _catalog_size(value: Any) -> int:
+    """Read an optional catalog size, NaN-safe after DataFrame conversion."""
+    if value is None or pd.isna(value):
+        return 0
+    return int(value)
+
+
+def _read_column_size(column: dict[str, Any]) -> tuple[int, int]:
+    """Read a column's ``(length, precision)`` from its catalog row.
+
+    Snowflake reports the size in a type-specific column: the character
+    length for TEXT, precision and scale for NUMBER, fractional-seconds
+    precision for TIME and timestamps. The size is returned in its
+    comparable form, so an unbounded VARCHAR extracts as ``TEXT``, not
+    as ``TEXT(16777216)``.
+
+    Example: a ``NUMBER(18,2)`` row returns ``(18, 2)``, an ``INTEGER``
+    row (``NUMBER(38,0)``) returns ``(0, 0)``.
+    """
+    data_type = str(column["data_type"]).upper()
+    if data_type == "TEXT":
+        length = _catalog_size(column.get("character_maximum_length"))
+        precision = 0
+    elif data_type == "NUMBER":
+        length = _catalog_size(column.get("numeric_precision"))
+        precision = _catalog_size(column.get("numeric_scale"))
+    elif data_type in _DATETIME_DATA_TYPES:
+        length = _catalog_size(column.get("datetime_precision"))
+        precision = 0
+    else:
+        return 0, 0
+    return normalize_comparable_type_size(
+        data_type,
+        length=length,
+        precision=precision,
+        capabilities=SNOWFLAKE_DEPLOY_CAPABILITIES,
+    )
 
 
 class SnowflakeStructureReader(SQLConnectorStructureReader[SnowflakeConnector]):
@@ -294,9 +341,12 @@ class SnowflakeStructureReader(SQLConnectorStructureReader[SnowflakeConnector]):
         for col in columns:
             col_name = col["column_name"].lower()
             data_type = col["data_type"]
+            length, precision = _read_column_size(col)
             field = Field(
                 name=col_name,
                 data_type=data_type,
+                length=length,
+                precision=precision,
                 default_value=normalize_column_default(
                     raw_default=col["column_default"],
                 ),

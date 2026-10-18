@@ -3,9 +3,10 @@ from collections.abc import Callable
 from functools import update_wrapper
 from typing import Any
 
+import click
 from click import Context
 
-from nld.cli.cli_events import CommandCompleted, CommandRuntimeError
+from nld.cli.cli_events import CommandCompleted, CommandRuntimeError, CommandStarted
 from nld.cli.cli_exceptions import ExceptionExit
 from nld.logging import EventLevel, LoggerManager, log_event_default
 from nld.task.context import NldExecutionContext, TaskRequest
@@ -28,6 +29,7 @@ def pre_processing(
     logger_formatter: logging.Formatter | None = None,
     with_project: bool = False,
     completion_label: str | None = None,
+    silent_start: bool = False,
 ) -> Callable[..., Any]:
     """Handles all preprocessing tasks for click commands.
 
@@ -39,6 +41,7 @@ def pre_processing(
         logger_formatter: The logger formatter to use
         with_project: Whether to initialize the project in the execution context
         completion_label: Custom label for the completion message
+        silent_start: When True, skip logging the CommandStarted event
     """
 
     def decorator(f: Any):  # type: ignore
@@ -76,10 +79,19 @@ def pre_processing(
                 completion_label=completion_label,
             )
 
-            NldExecutionContext(
+            execution_context = NldExecutionContext(
                 task_request=task_request,
                 with_project=with_project,
-            ).set_current()
+            )
+            execution_context.set_current()
+
+            if not silent_start:
+                log_event_default(
+                    CommandStarted(
+                        exec_info=execution_context.exec_info,
+                        parameters=task_request.get_parameters(),
+                    ),
+                )
 
             ctx.run_params = {}  # type: ignore[attr-defined]
 
@@ -112,6 +124,11 @@ def manage_cli_exception(
             exception_occurred = False
             try:
                 success = f(*args, **kwargs)
+            except click.exceptions.Exit:
+                # click's Exit subclasses RuntimeError: a command ending
+                # through ctx.exit chose its exit code (2 for a deploy
+                # preview with pending changes) and did not fail.
+                raise
             except (RuntimeError, Exception) as e:
                 exception_occurred = True
                 caught_exception = e

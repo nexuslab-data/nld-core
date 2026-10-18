@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 
 
 def split_camel_case_string(input_str: str) -> list[str]:
@@ -34,3 +35,14 @@ def truncate_text(
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def split_comma_separated_values(values: Iterable[str]) -> list[str]:
+    """Split comma-separated values into unique, stripped, non-empty items.
+
+    Example:
+        ``split_comma_separated_values(["a, b", "c,a"])`` returns
+        ``["a", "b", "c"]``, in first-seen order.
+    """
+    items = (item.strip() for value in values for item in value.split(","))
+    return list(dict.fromkeys(item for item in items if item))

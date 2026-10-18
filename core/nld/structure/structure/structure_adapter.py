@@ -1,7 +1,13 @@
 from typing import Any
 
+from pydantic import ValidationInfo, field_validator
+
 from nld.logging import log_event_default
-from nld.pydantic import NldNamedBaseModel, NldNamespacedBaseModelWrapper
+from nld.pydantic import (
+    NldNamedBaseModel,
+    NldNamespacedBaseModelWrapper,
+    get_source_file_path,
+)
 from nld.structure.events import CreatedStructureUsingAdaptation
 from nld.structure.field import (
     Field,
@@ -19,6 +25,9 @@ from nld.utils.jinja_utils import (
 )
 
 from .structure import Structure
+from .structure_characterisation_def import (
+    resolve_structure_characterisation_alias,
+)
 from .structure_template import StructureTemplate
 
 
@@ -36,6 +45,28 @@ class StructureAdapter(NldNamedBaseModel):
     structure_characterisations_to_include: list[str] | None = None
     template_mapping: dict[str, str | None] | None = None
     type_rule: str = "TABLE"
+
+    @field_validator("structure_characterisations_to_include", mode="before")
+    @classmethod
+    def resolve_characterisation_aliases(
+        cls,
+        value: list[str] | None,
+        info: ValidationInfo,
+    ) -> list[str] | None:
+        """Replace a deprecated ``functional_*`` type by its new name."""
+        if not value:
+            return value
+        location = f"structure adapter '{info.data.get('name')}'"
+        source_file_path = get_source_file_path(info)
+        if source_file_path is not None:
+            location = f"{location} ({source_file_path})"
+        return [
+            resolve_structure_characterisation_alias(
+                characterisation,
+                location=location,
+            )
+            for characterisation in value
+        ]
 
     def adapt_structure(self, **kwargs: Any) -> Structure:
         """

@@ -43,7 +43,7 @@ class ByKeyStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name", "key_name"],
                 "name": "fk_by_key_state",
             }
@@ -61,12 +61,14 @@ class ByKeyStateRow(NldBaseModel):
     first_processed_at: datetime.datetime | None = None
     source_deleted_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
     @field_validator(
         "last_successfully_processed_at",
         "last_processed_at",
         "first_processed_at",
         "source_deleted_at",
+        "source_last_updated_at",
         mode="before",
     )
     @classmethod
@@ -83,7 +85,7 @@ class ByKeyProcessingStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name", "key_name"],
                 "name": "fk_by_key_processing_state",
             }
@@ -99,9 +101,11 @@ class ByKeyProcessingStateRow(NldBaseModel):
     process_error_message: str | None = None
     processing_completed_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
     @field_validator(
         "processing_completed_at",
+        "source_last_updated_at",
         mode="before",
     )
     @classmethod
@@ -125,7 +129,7 @@ class ByKeyPlannedProcessingStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["plan_state_uid", "key_name"],
                 "name": "fk_by_key_planned_processing_state",
             },
@@ -139,6 +143,7 @@ class ByKeyPlannedProcessingStateRow(NldBaseModel):
     strategy: str | None = None
     planned_processing_status: str | None = None
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
 
 class PostgreSQLByKeyStateBackendManager(
@@ -193,7 +198,7 @@ class PostgreSQLByKeyStateBackendManager(
             table_name=PSQL_BY_KEY_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
         self.pydantic_manager.create_table(
@@ -202,7 +207,7 @@ class PostgreSQLByKeyStateBackendManager(
             table_name=PSQL_BY_KEY_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=False,
+            use_business_key_as_primary=False,
         )
 
     def read_processing_state(self) -> ByKeyProcessingState | None:
@@ -241,6 +246,7 @@ class PostgreSQLByKeyStateBackendManager(
                 process_error_message=row.process_error_message,
                 processing_completed_at=row.processing_completed_at,
                 parameters=row.parameters,
+                source_last_updated_at=row.source_last_updated_at,
             )
         return ByKeyProcessingState(
             flow_uid=latest_flow_uid,
@@ -281,6 +287,7 @@ class PostgreSQLByKeyStateBackendManager(
                 first_processed_at=row.first_processed_at,
                 source_deleted_at=row.source_deleted_at,
                 parameters=row.parameters,
+                source_last_updated_at=row.source_last_updated_at,
             )
         return ByKeyState(keys=keys)
 
@@ -317,6 +324,7 @@ class PostgreSQLByKeyStateBackendManager(
                 first_processed_at=row.first_processed_at,
                 source_deleted_at=row.source_deleted_at,
                 parameters=row.parameters,
+                source_last_updated_at=row.source_last_updated_at,
             )
 
         return ByKeyState(keys=keys)
@@ -339,6 +347,7 @@ class PostgreSQLByKeyStateBackendManager(
                 process_error_message=key_state.process_error_message,
                 processing_completed_at=key_state.processing_completed_at,
                 parameters=key_state.parameters,
+                source_last_updated_at=key_state.source_last_updated_at,
             )
             for key_state in processing_flow_state.keys.values()
         ]
@@ -371,6 +380,7 @@ class PostgreSQLByKeyStateBackendManager(
             process_error_message=key_state.process_error_message,
             processing_completed_at=key_state.processing_completed_at,
             parameters=key_state.parameters,
+            source_last_updated_at=key_state.source_last_updated_at,
         )
 
         self.pydantic_manager.upsert_model(
@@ -401,6 +411,7 @@ class PostgreSQLByKeyStateBackendManager(
                 first_processed_at=key_state.first_processed_at,
                 source_deleted_at=key_state.source_deleted_at,
                 parameters=key_state.parameters,
+                source_last_updated_at=key_state.source_last_updated_at,
             )
             for key_state in post_processing_flow_state.keys.values()
         ]
@@ -435,6 +446,7 @@ class PostgreSQLByKeyStateBackendManager(
             first_processed_at=key_state.first_processed_at,
             source_deleted_at=key_state.source_deleted_at,
             parameters=key_state.parameters,
+            source_last_updated_at=key_state.source_last_updated_at,
         )
 
         self.pydantic_manager.upsert_model(
@@ -456,7 +468,7 @@ class PostgreSQLByKeyStateBackendManager(
             table_name=PSQL_BY_KEY_PLANNED_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
     def write_planned_processing_state(
@@ -474,6 +486,7 @@ class PostgreSQLByKeyStateBackendManager(
                 strategy=detailed_state.strategy,
                 planned_processing_status=key_detail.planned_processing_status,
                 parameters=key_detail.parameters,
+                source_last_updated_at=key_detail.source_last_updated_at,
             )
             for key_detail in detailed_state.keys.values()
         ]
@@ -513,6 +526,7 @@ class PostgreSQLByKeyStateBackendManager(
                     or IncrementalProcessingStatus.TO_BE_PROCESSED
                 ),
                 parameters=row.parameters,
+                source_last_updated_at=row.source_last_updated_at,
             )
         return ByKeyPlannedProcessingDetailedState(
             plan_state_uid=plan_state_uid,

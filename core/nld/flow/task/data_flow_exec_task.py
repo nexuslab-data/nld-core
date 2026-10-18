@@ -11,7 +11,7 @@ from nld.parameters.execution_params_def import (
 )
 from nld.service import EntityTypeNames
 from nld.task.base import StandardTask
-from nld.utils import format_exception_chain
+from nld.utils import format_exception_chain, format_exception_traceback
 
 from .data_flow_executor import DataFlowExecutor
 
@@ -257,7 +257,8 @@ class DataFlowExecutionTask(StandardTask):
                 error_msg = format_exception_chain(exception=ex)
                 batch_info.failed_flows[display_id] = error_msg
                 self.log_error(
-                    f"{log_prefix} ❌ Flow '{display_id}' failed:\n{error_msg}",
+                    f"{log_prefix} ❌ Flow '{display_id}' failed:\n"
+                    f"{format_exception_traceback(exception=ex)}",
                 )
                 self._skip_dependents(
                     failed_flow_id=flow_id,

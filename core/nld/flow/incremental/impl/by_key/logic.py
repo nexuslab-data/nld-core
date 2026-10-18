@@ -7,6 +7,7 @@ from nld.flow.incremental.models import (
     WITH_DELTA_FLAG_PARAM,
     FlowIncrementalDefinition,
     FlowIncrementalLogic,
+    FlowIncrementalOptions,
     FlowIncrementalParamDefinition,
     FlowIncrementalParams,
     FlowSourceSelection,
@@ -45,6 +46,24 @@ KEYS_PARAM = FlowIncrementalParamDefinition(
     allowed_values=None,
 )
 
+
+class ByKeyOptions(FlowIncrementalOptions):
+    """The ``incremental.options`` block of a by_key flow.
+
+    ``reprocess_updated_keys`` makes DELTA and BACKFILL_DELTA select again a
+    SUCCEEDED key whose source ``last_updated_at`` moved past the one seen
+    by its last successful processing. It is off by default, so a flow
+    keeps every SUCCEEDED key terminal until it opts in::
+
+        incremental:
+          type: by_key
+          options:
+            reprocess_updated_keys: true
+    """
+
+    reprocess_updated_keys: bool = False
+
+
 BY_KEY_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
     default_strategy=FlowLoadingStrategies.DELTA,
     name="BY_KEY",
@@ -67,6 +86,7 @@ BY_KEY_INCREMENTAL_DEFINITION = FlowIncrementalDefinition(
         LIMIT_PARAM,
         WITH_DELTA_FLAG_PARAM,
     ],
+    options_model=ByKeyOptions,
 )
 
 
@@ -74,6 +94,12 @@ class ByKeyFlowIncrementalParams(FlowIncrementalParams):
     _definition: ClassVar[FlowIncrementalDefinition] = BY_KEY_INCREMENTAL_DEFINITION
     keys: list[str] | None = None
     limit: int | None = None
+    options: ByKeyOptions | None = None
+
+    @property
+    def reprocess_updated_keys(self) -> bool:
+        """Whether source updates re-select SUCCEEDED keys (off by default)."""
+        return self.options is not None and self.options.reprocess_updated_keys
 
     @field_validator("keys", mode="before")
     @classmethod

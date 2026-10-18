@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nld docs</title>
+    <link rel="icon" type="image/svg+xml" href="./nld_mark.svg" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <a class="brand" href="#/" title="nld docs">
+          <img class="brand-logo" src="./nld_mark.svg" alt="nld docs" />
+        </a>
+        <div class="project-name" id="project-name"></div>
+        <div class="search-box">
+          <input
+            id="search-input"
+            type="search"
+            placeholder="Search assets…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <nav id="nav"></nav>
+        <div class="sidebar-footer">
+          <button id="theme-toggle" type="button">Toggle theme</button>
+          <div class="generated-at" id="generated-at"></div>
+        </div>
+      </aside>
+      <main id="main">
+        <div id="content"></div>
+      </main>
+    </div>
+    <script src="./docs.config.js"></script>
+    <script src="./snapshot.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -70,26 +70,26 @@ class NldBaseModelSQLiteManager(NldBaseModelManager):
         """Render the quoted table reference in the single SQLite namespace."""
         return quote_identifier(table_name, dialect=SQLITE_DIALECT)
 
-    def _create_functional_key_index(
+    def _create_business_key_index(
         self,
         structure: Structure,
         table_name: str,
         table_path: str,
-        use_functional_key_as_primary: bool,
+        use_business_key_as_primary: bool,
     ) -> None:
         from nld.structure import StructureCharacterisationDefinitionNames
 
-        if use_functional_key_as_primary:
+        if use_business_key_as_primary:
             return
 
-        functional_key = structure.get_characterisation(
-            StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY
+        business_key = structure.get_characterisation(
+            StructureCharacterisationDefinitionNames.BUSINESS_KEY
         )
-        if functional_key and functional_key.linked_fields:
+        if business_key and business_key.linked_fields:
             self.connector.create_index(
-                index_name=f"{functional_key.name}_{table_name}".lower(),
+                index_name=f"{business_key.name}_{table_name}".lower(),
                 table_path=table_path,
-                columns=functional_key.linked_fields,
+                columns=business_key.linked_fields,
                 unique=False,
             )
 
