@@ -343,6 +343,17 @@ state_compute_source_request_authorized = click.option(
     ),
 )
 
+state_exclude_keys = click.option(
+    "--keys",
+    "keys",
+    multiple=True,
+    required=True,
+    help=(
+        "Keys to set to PERMANENTLY_EXCLUDED, comma-separated "
+        "(repeatable), e.g. --keys 12345,67890."
+    ),
+)
+
 deploy_interactive = click.option(
     "--interactive/--no-interactive",
     "interactive",

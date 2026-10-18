@@ -45,7 +45,7 @@ def build_slack_payload(alert: FlowAlert) -> dict[str, Any]:
     emoji = _LEVEL_EMOJIS[alert.level]
     environment = alert.environment or "-"
     headline = (
-        f"{emoji} [{environment}] {alert.flow_path} finished in state "
+        f"{emoji} [{environment}] {alert.subject} finished in state "
         f"{alert.execution_status}"
     )
     summary = escape_html_entities(
@@ -55,7 +55,7 @@ def build_slack_payload(alert: FlowAlert) -> dict[str, Any]:
         ),
     )
     blocks: list[dict[str, Any]] = [
-        _section(f"{emoji} *{alert.level.value}* — `{alert.flow_path}`\n{summary}"),
+        _section(f"{emoji} *{alert.level.value}* — `{alert.subject}`\n{summary}"),
     ]
 
     if alert.items:

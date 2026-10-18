@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import abc
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
+from sqlglot import exp
 
 from nld.exceptions import NotImplementedMethodException
 from nld.structure import Structure
@@ -192,6 +195,10 @@ class DataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](NldMixIn):
         )
 
 
+class _TransactionRollback(Exception):
+    """Unwinds a transaction block whose statement reported a failure."""
+
+
 class DataTransformationOperation(Enum):
     """Supported DML transformation operations for execute_transfo."""
 
@@ -205,6 +212,7 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
 ):
     def __init__(self, connection_wrapper: CONNECTION_WRAPPER) -> None:
         super().__init__(connection_wrapper)
+        self._in_transaction = False
 
     @property
     def sqlglot_dialect(self) -> str:
@@ -230,6 +238,69 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         connection = getattr(self.connection_wrapper, "connection", None)
         if connection is not None and hasattr(connection, "commit"):
             connection.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Run the statements executed in the block as one transaction.
+
+        Inside the block ``execute_query`` stops committing per statement:
+        the block commits once when it exits normally and rolls back when
+        it raises, so a reader never sees a half-applied change. Engines
+        enable it by implementing the begin, commit and rollback steps.
+
+        Example:
+            with connector.transaction():
+                connector.truncate_table(table_path="sales.orders")
+                connector.insert_into_from_query(...)
+        """
+        if self._in_transaction:
+            raise RuntimeError(
+                f"A transaction is already open on connector "
+                f"'{self.connection_wrapper.name}'"
+            )
+        self._begin_transaction()
+        self._in_transaction = True
+        try:
+            yield
+        except BaseException:
+            self._in_transaction = False
+            self._rollback_transaction()
+            raise
+        self._in_transaction = False
+        self._commit_transaction()
+
+    def _begin_transaction(self) -> None:
+        """Open the transaction backing a ``transaction`` block."""
+        raise NotImplementedMethodException(self.__class__, "_begin_transaction")
+
+    def _commit_transaction(self) -> None:
+        """Commit the transaction backing a ``transaction`` block."""
+        raise NotImplementedMethodException(self.__class__, "_commit_transaction")
+
+    def _rollback_transaction(self) -> None:
+        """Roll back the transaction backing a ``transaction`` block."""
+        raise NotImplementedMethodException(self.__class__, "_rollback_transaction")
+
+    def _execute_in_transaction(
+        self,
+        steps: list[Callable[[], QueryExecResult]],
+    ) -> list[QueryExecResult]:
+        """Run query steps in one transaction, stopping at the first failure.
+
+        A step reporting a failure without raising rolls the transaction
+        back as well, so the steps apply all together or not at all.
+        """
+        results: list[QueryExecResult] = []
+        try:
+            with self.transaction():
+                for step in steps:
+                    result = step()
+                    results.append(result)
+                    if result.failed():
+                        raise _TransactionRollback
+        except _TransactionRollback:
+            pass
+        return results
 
     def get_data_profiler(self) -> ConnectorDataProfiler[Any]:
         """Return the SQL data profiler, which builds its queries via the
@@ -270,6 +341,10 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
         override it with their own path-normalization rules.
         """
         return object_path
+
+    def _split_object_path(self, object_path: str) -> tuple[str, str]:
+        """Split a qualified object path into schema and object name."""
+        raise NotImplementedMethodException(self.__class__, "_split_object_path")
 
     # Read-only export operations
 
@@ -736,6 +811,39 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
             ),
         )
 
+    def delete_where(
+        self,
+        table_path: str,
+        condition: exp.Expression,
+        **kwargs: Any,
+    ) -> QueryExecResult:
+        """Delete the rows of a table matching a condition.
+
+        Used by scoped write strategies to clear the target rows a run
+        owns (e.g. the periods replaced by a by_target_period flow). The
+        SQL is rendered by the connector's DML builder
+        (``build_delete_where_query``) so each engine applies its own
+        identifier conventions.
+
+        Args:
+            table_path: fully qualified table path (e.g. schema.table).
+            condition: the sqlglot condition selecting the rows to delete.
+
+        Returns:
+            The result of the DELETE query execution.
+        """
+        table_path = self.clean_object_path(table_path)
+        delete_query = self.get_dml_builder().build_delete_where_query(
+            table_path=table_path,
+            condition=condition,
+        )
+        return self.execute_query(
+            query=QueryWrapper(
+                query=delete_query,
+                name=table_path,
+            ),
+        )
+
     def create_or_replace_view(
         self,
         view_path: str,
@@ -755,6 +863,127 @@ class SQLDataConnector[CONNECTION_WRAPPER: ConnectionWrapper[Any, Any]](
             name=view_path,
         )
         return self.execute_query(query=create_view_query)
+
+    @property
+    def replace_table_recreates_table(self) -> bool:
+        """Whether ``replace_table_from_query`` drops and recreates the table.
+
+        A recreated table loses what was added to it after its creation
+        (e.g. the grants of structure post-deployment hooks), so callers
+        re-apply those once the replace succeeded.
+        """
+        return True
+
+    def replace_table_from_query(
+        self,
+        table_path: str,
+        sql_query: str,
+        structure: Structure,
+        **kwargs: Any,
+    ) -> list[QueryExecResult]:
+        """Replace a table with the result of a SELECT query, atomically.
+
+        The default rebuilds the table inside one transaction: it drops
+        the table, recreates it from the structure with the statements
+        structure deploy runs, then inserts the query result. Readers
+        keep the previous content until the commit and a failure rolls
+        the whole rebuild back. Engines with a native ``CREATE OR REPLACE
+        TABLE ... AS``, or whose views forbid the drop, override it.
+
+        Args:
+            table_path: fully qualified table path (e.g. schema.table).
+            sql_query: the SELECT query providing the new content, its
+                columns in the structure's field order.
+            structure: the declared structure the table is rebuilt from.
+
+        Returns:
+            A list of QueryExecResult, one per executed statement. On
+            failure, the list ends with the failed result.
+        """
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
+        statement_builder = self.get_structure_diff_ddl_statement_builder()
+        ddl_statements = [
+            statement_builder.build_drop_table_statement(
+                schema_name=schema_name,
+                table_name=table_name,
+            ),
+            *statement_builder.build_create_table_statements(
+                structure=structure.model_copy(update={"name": table_name}),
+                schema_name=schema_name,
+            ),
+        ]
+        steps: list[Callable[[], QueryExecResult]] = [
+            partial(
+                self.execute_query,
+                query=QueryWrapper(
+                    query=statement.sql,
+                    name=table_path,
+                ),
+            )
+            for statement in ddl_statements
+        ]
+        steps.append(
+            partial(
+                self.insert_into_from_query,
+                table_path=table_path,
+                sql_query=sql_query,
+                column_list=[field.name for field in structure.get_all_fields()],
+            ),
+        )
+        return self._execute_in_transaction(steps)
+
+    def _replace_table_with_create_or_replace(
+        self,
+        table_path: str,
+        sql_query: str,
+        structure: Structure,
+    ) -> list[QueryExecResult]:
+        """Replace a table with one native CREATE OR REPLACE TABLE ... AS.
+
+        The engine swaps the table atomically: readers keep the previous
+        table until the statement succeeds, and a failure leaves it in
+        place. The definition is the structure's CREATE TABLE, so the
+        declared types win over the query's. The statements structure
+        deploy runs after CREATE TABLE (e.g. UNIQUE constraints) follow
+        the swap. The engines report no row count for a CREATE TABLE ...
+        AS, so the loaded rows are counted afterwards.
+        """
+        table_path = self.clean_object_path(table_path)
+        schema_name, table_name = self._split_object_path(table_path)
+        create_statement, *follow_up_statements = (
+            self.get_structure_diff_ddl_statement_builder().build_create_table_statements(
+                structure=structure.model_copy(update={"name": table_name}),
+                schema_name=schema_name,
+            )
+        )
+        replace_result = self.execute_query(
+            query=QueryWrapper(
+                query=self.get_ddl_builder().build_create_or_replace_table_as(
+                    create_table_sql=create_statement.sql,
+                    select_query=sql_query,
+                ),
+                name=table_path,
+            ),
+        )
+        if replace_result.failed():
+            return [replace_result]
+        results = [
+            replace_result.model_copy(
+                update={"row_count": self.get_row_count(object_path=table_path)},
+            ),
+        ]
+        for statement in follow_up_statements:
+            result = self.execute_query(
+                query=QueryWrapper(
+                    query=statement.sql,
+                    name=table_path,
+                ),
+            )
+            results.append(result)
+            if result.failed():
+                break
+        return results
 
     def execute_transfo(
         self,

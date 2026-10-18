@@ -23,14 +23,14 @@ class BackendStatePlanRow(NldBaseModel):
     per-strategy slot referenced by ``plan_state_uid`` (a processing-state
     table for PostgreSQL, a sibling file for S3).
 
-    The ``functional_key`` / ``primary_key`` ``json_schema_extra`` drive the
+    The ``business_key`` / ``primary_key`` ``json_schema_extra`` drive the
     PostgreSQL state-plan table DDL; they are inert metadata for backends
     (such as S3) that serialise the row to JSON instead.
     """
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["plan_state_uid"],
                 "name": "fk_incremental_plans",
             },

@@ -22,6 +22,7 @@ SNOWFLAKE_DEPLOY_CAPABILITIES = ConnectorDeployCapabilities(
     comparable_data_type_aliases=(
         SNOWFLAKE_CONNECTOR_DEFINITION.comparable_data_type_aliases
     ),
+    default_data_type_sizes=SNOWFLAKE_CONNECTOR_DEFINITION.default_data_type_sizes,
     enforce_field_order_default=True,
     rename_column_in_place=True,
     rename_table_in_place=True,

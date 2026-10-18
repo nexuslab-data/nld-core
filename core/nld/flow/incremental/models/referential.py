@@ -15,6 +15,7 @@ class SourceAvailability(NldStrEnum):
 class FlowSourceSelection(NldStrEnum):
     NO_SELECTION = "NO_SELECTION"
     BY_KEY = "BY_KEY"
+    BY_PERIOD = "BY_PERIOD"
     BY_SOURCE_TST = "BY_SOURCE_TST"
 
 
@@ -22,6 +23,7 @@ class FlowTargetUpdateGranularity(NldStrEnum):
     GENERIC = "GENERIC"
     BY_KEY = "BY_KEY"
     BY_DAY = "BY_DAY"
+    BY_PERIOD = "BY_PERIOD"
 
 
 # State status

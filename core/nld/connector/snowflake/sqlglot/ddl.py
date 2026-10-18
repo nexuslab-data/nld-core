@@ -86,6 +86,14 @@ class SnowflakeSqlglotDDLBuilder(BaseSqlglotDDLBuilder):
         )
         return create.sql(dialect=self._dialect)
 
+    def _build_replace_table_properties(self) -> list[exp.Expression]:
+        """Keep the replaced table's grants with COPY GRANTS.
+
+        Without it, ``CREATE OR REPLACE TABLE`` drops every privilege
+        granted on the previous table.
+        """
+        return [exp.CopyGrantsProperty()]
+
     def _unquoted_table(self, schema: str, table: str) -> exp.Table:
         """Build an unquoted table reference for Snowflake."""
         return exp.Table(
@@ -357,7 +365,8 @@ class SnowflakeSqlglotDDLBuilder(BaseSqlglotDDLBuilder):
         )
         return (
             f"SELECT {select_columns}, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, "
-            "CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE "
+            "CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, "
+            "DATETIME_PRECISION "
             "FROM INFORMATION_SCHEMA.COLUMNS "
             f"WHERE TABLE_CATALOG = {self._literal(database)} "
             f"AND TABLE_SCHEMA = {self._literal(schema)} "

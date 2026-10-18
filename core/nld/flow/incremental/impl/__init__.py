@@ -11,6 +11,12 @@ BUILTIN_INCREMENTAL_TYPE_MANIFESTS: list[FlowIncrementalTypeManifest] = [
         backend_package="nld.flow.incremental.impl.by_key.backend",
     ),
     FlowIncrementalTypeManifest(
+        name="by_target_period",
+        logic_module="nld.flow.incremental.impl.by_target_period.logic",
+        state_manager_module="nld.flow.incremental.impl.by_target_period.manager",
+        backend_package="nld.flow.incremental.impl.by_target_period.backend",
+    ),
+    FlowIncrementalTypeManifest(
         name="by_source_tst",
         logic_module="nld.flow.incremental.impl.by_source_tst.logic",
         state_manager_module="nld.flow.incremental.impl.by_source_tst.manager",

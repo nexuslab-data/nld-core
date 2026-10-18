@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, cast, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 from nld.connector.postgresql.connector_definition import (
     PostgreSQLDataTypes,
@@ -125,32 +125,17 @@ class PostgreSQLPydanticStructureMapper(BasePydanticStructureMapper):
                 )
             )
 
-        # Extract functional unique key from model-level config
-        model_config = getattr(model_class, "model_config", None)
-        if model_config:
-            json_schema_extra = None
-            if isinstance(model_config, dict):
-                json_schema_extra = model_config.get("json_schema_extra")
-            elif hasattr(model_config, "get"):
-                json_schema_extra = model_config.get("json_schema_extra")
-
-            if isinstance(json_schema_extra, dict):
-                functional_key = json_schema_extra.get("functional_key")
-                if isinstance(functional_key, dict):
-                    fields = cast(list[str], functional_key.get("fields", []))
-                    name = cast(
-                        str,
-                        functional_key.get("name", f"FUK_{model_class.__name__}"),
-                    )
-                    if fields:
-                        linked_fields: list[str] = [str(f) for f in fields]
-                        structure.add_characterisation(
-                            StructureCharacterisation(
-                                characterisation=StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY,
-                                name=name,
-                                linked_fields=linked_fields,
-                            )
-                        )
+        business_key = cls.get_business_key(model_class)
+        if business_key is not None:
+            structure.add_characterisation(
+                StructureCharacterisation(
+                    characterisation=(
+                        StructureCharacterisationDefinitionNames.BUSINESS_KEY
+                    ),
+                    name=business_key.name,
+                    linked_fields=business_key.field_names,
+                )
+            )
 
         return structure
 

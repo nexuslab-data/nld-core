@@ -2,7 +2,11 @@ from nld.pydantic.backend import (
     BasePydanticStructureMapper,
     NldBaseModelManager,
 )
-from nld.pydantic.base_model import NldBaseModel
+from nld.pydantic.base_model import (
+    SOURCE_FILE_PATH_CONTEXT_KEY,
+    NldBaseModel,
+    get_source_file_path,
+)
 from nld.pydantic.entity_layout import (
     FLOWS_FOLDER_NAME,
     SEEDS_FOLDER_NAME,
@@ -37,9 +41,11 @@ __all__ = [
     "NldNamespacedBaseModelWrapper",
     "ResolutionContext",
     "SEEDS_FOLDER_NAME",
+    "SOURCE_FILE_PATH_CONTEXT_KEY",
     "TS_INSERTED_AT",
     "TS_UPDATED_AT",
     "WILDCARD_CHARACTER",
     "build_entity_key",
+    "get_source_file_path",
     "select_by_namespace_priority",
 ]

@@ -1,25 +1,28 @@
 """Tasks backing the ``nld flow state`` CLI subcommands.
 
-These tasks expose read-only access to the persisted execution and
-incremental state of a data flow. They never mutate anything: no flow
-runtime is started and no current execution is registered. They only
-build the appropriate primary-backend state manager and call the
-read-only accessors added on the backend managers.
+These tasks expose the persisted execution and incremental state of a
+data flow. No flow runtime is started and no current execution is
+registered: they build the appropriate primary-backend state manager
+and call the accessors added on the backend managers. Only two of them
+write: ``compute --persist`` saves a PLANNED plan and ``exclude-keys``
+sets by_key keys to PERMANENTLY_EXCLUDED.
 """
 
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, ClassVar
 
 from nld.flow.definition.flow_definition import NamespacedDataFlowDefinition
 from nld.flow.execution import FlowExecutionHistory, FlowExecutionInfo
 from nld.flow.execution.factory import ExecutionStateManagerFactory
+from nld.flow.incremental.impl.by_key import ByKeyState, ByKeyStateBackendManager
 from nld.flow.incremental.models import (
     FlowIncrementalDefinition,
     FlowProcessingState,
     FlowState,
+    IncrementalStateStatus,
 )
 from nld.flow.incremental.services.factory import IncrementalStateManagerFactory
 from nld.flow.state.state_backend_connector_resolver import (
@@ -30,6 +33,7 @@ from nld.flow.task.data_flow_executor import (
     DataFlowExecutor,
 )
 from nld.flow.task.data_flow_state_renderers import (
+    render_excluded_keys_text,
     render_execution_history_text,
     render_execution_overview_text,
     render_execution_state_text,
@@ -45,6 +49,7 @@ from nld.service import EntityTypeNames, FileOutputService
 from nld.task.base import StandardTask
 from nld.utils.datetime_util import get_current_datetime
 from nld.utils.requestor_utils import resolve_default_requestor
+from nld.utils.string_utils import split_comma_separated_values
 
 DISPLAY_FORMAT_TEXT = "text"
 DISPLAY_FORMAT_JSON = "json"
@@ -55,6 +60,9 @@ FLOW_STATE_EXECUTION_GET_STEPS_FILE_NAME = "flow_state_execution_get_steps.json"
 FLOW_STATE_INCREMENTAL_GET_STATE_FILE_NAME = "flow_state_incremental_get_state.json"
 FLOW_STATE_INCREMENTAL_GET_PLANNED_FILE_NAME = "flow_state_incremental_get_planned.json"
 FLOW_STATE_INCREMENTAL_COMPUTE_FILE_NAME = "flow_state_incremental_compute.json"
+FLOW_STATE_INCREMENTAL_EXCLUDE_KEYS_FILE_NAME = (
+    "flow_state_incremental_exclude_keys.json"
+)
 
 
 class AbstractDataFlowStateTask(StandardTask):
@@ -581,11 +589,18 @@ class FlowStateIncrementalComputeTask(AbstractDataFlowStateTask):
         )
 
     def _needs_source_confirmation(self) -> bool:
+        if self.source_request_authorized:
+            return False
         definition = self._data_flow_task.incremental_definition
-        return bool(
-            definition.requires_source_state_retrieval
-            and not self.source_request_authorized,
+        if not definition.requires_source_state_retrieval:
+            return False
+        # The definition flag is the envelope of the type; the state
+        # manager narrows it to the resolved strategy (e.g. a declared
+        # by_target_period replay never reads the source).
+        incremental_state_manager = (
+            self._data_flow_task.state_manager.incremental_state_manager
         )
+        return bool(incremental_state_manager.requires_source_state_retrieval())
 
     def _confirmation_message(self) -> str:
         return (
@@ -665,5 +680,93 @@ class FlowStateIncrementalComputeTask(AbstractDataFlowStateTask):
                 plan_state_uid=plan_state_uid,
                 requestor=self.requestor,
             ),
+        )
+        return True
+
+
+class FlowStateIncrementalExcludeKeysTask(AbstractDataFlowStateTask):
+    """``nld flow state incremental exclude-keys`` — exclude by_key keys.
+
+    Sets the given keys to PERMANENTLY_EXCLUDED in the key state of a
+    by_key flow, on the primary state backend, so DELTA and BACKFILL_DELTA
+    never select them again. It lets an operator exclude a key the flow
+    code cannot classify, e.g. a source answer the code cannot tell
+    permanent. A key absent from the state is added, so a key can be
+    excluded before its first run.
+
+    A BACKFILL of the keys (``--keys`` without ``--with-delta``) or a FULL
+    run re-attempts them, which is how an exclusion is undone.
+    """
+
+    init_params: ClassVar[list[str | ExecutionParameterDefinition]] = [
+        *AbstractDataFlowStateTask.init_params,
+        ExecutionParameterDefinition(name="keys", data_type="list"),
+    ]
+
+    def __init__(
+        self,
+        name: str,
+        keys: Iterable[str],
+        namespace: str | None = None,
+        output: bool = False,
+        override_output_folder_path: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            name=name,
+            namespace=namespace,
+            output=output,
+            override_output_folder_path=override_output_folder_path,
+            **kwargs,
+        )
+        self.key_names = split_comma_separated_values(values=keys)
+        if not self.key_names:
+            raise ValueError("No key to exclude: pass at least one key with --keys.")
+
+    def _build_key_state_backend_manager(self) -> ByKeyStateBackendManager[Any]:
+        """Build the by_key backend manager, refusing any other flow."""
+        definition = self._get_incremental_definition()
+        not_by_key_error = ValueError(
+            f"Flow '{self.data_flow_definition.name}' uses the "
+            f"'{definition.category}' incremental type: only by_key flows "
+            "hold a key state to exclude keys from."
+        )
+        # Checked before building the backend so a stateless flow never
+        # opens its state backend connection.
+        if not issubclass(definition.state_class, ByKeyState):
+            raise not_by_key_error
+        backend_manager, _ = self._build_incremental_backend_manager()
+        if not isinstance(backend_manager, ByKeyStateBackendManager):
+            raise not_by_key_error
+        return backend_manager
+
+    def run(self, **kwargs: Any) -> bool:
+        backend_manager = self._build_key_state_backend_manager()
+        previous_statuses = backend_manager.set_keys_to_permanently_excluded(
+            names=self.key_names,
+        )
+        excluded_status = IncrementalStateStatus.PERMANENTLY_EXCLUDED
+        for key_name, previous_status in previous_statuses.items():
+            if previous_status is None:
+                self.log_warn(
+                    f"Key '{key_name}' was not in the key state: "
+                    f"added as {excluded_status}."
+                )
+            elif previous_status == excluded_status:
+                self.log_info(f"Key '{key_name}' is already {excluded_status}.")
+            else:
+                self.log_info(
+                    f"Key '{key_name}' set from {previous_status} to {excluded_status}."
+                )
+        self._persist_or_print(
+            data={
+                "status": excluded_status,
+                "keys": [
+                    {"name": key_name, "previous_status": previous_status}
+                    for key_name, previous_status in previous_statuses.items()
+                ],
+            },
+            file_name=FLOW_STATE_INCREMENTAL_EXCLUDE_KEYS_FILE_NAME,
+            text=render_excluded_keys_text(previous_statuses=previous_statuses),
         )
         return True

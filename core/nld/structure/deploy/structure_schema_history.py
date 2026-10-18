@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from nld.connector.base.deploy_capabilities import (
     ConnectorDeployCapabilities,
     normalize_comparable_data_type,
+    normalize_comparable_type_size,
 )
 from nld.pydantic.base_model import NldBaseModel
 from nld.structure.deploy.structure_diff import StructureDiff
@@ -47,16 +48,24 @@ class StructureSchemaSnapshotField(NldBaseModel):
         the same reason: engines spell semantically-equal types
         differently on read-back (Snowflake reports a declared
         ``NUMERIC`` as ``NUMBER``), and a raw-spelling snapshot would
-        hash a schema as changed when nothing physical changed.
+        hash a schema as changed when nothing physical changed. The
+        size is stored in its comparable form too: Snowflake reads a
+        bare ``VARCHAR`` back as 16777216 characters.
         """
+        length, precision = normalize_comparable_type_size(
+            field.data_type,
+            length=field.length,
+            precision=field.precision,
+            capabilities=capabilities,
+        )
         return cls(
             name=field.name,
             data_type=normalize_comparable_data_type(
                 data_type=field.data_type,
                 capabilities=capabilities,
             ),
-            length=field.length,
-            precision=field.precision,
+            length=length,
+            precision=precision,
             nullable=not (field.is_mandatory() or in_primary_key),
             default_value=field.default_value,
         )

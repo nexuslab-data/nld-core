@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nld-core"
-version = "0.1.2a5"
+version = "0.1.3a2"
 description = "Typed, YAML-defined data flows with built-in incremental processing across major SQL warehouses."
 readme = "README.md"
 requires-python = ">=3.12.0,<3.14"
@@ -62,3 +62,4 @@ namespaces = true
 
 [tool.setuptools.package-data]
 nld = [ "py.typed" ]
+"nld.docs.site.assets" = [ "*.html", "*.css", "*.js", "*.svg" ]

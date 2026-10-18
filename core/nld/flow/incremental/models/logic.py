@@ -55,6 +55,25 @@ WITH_DELTA_FLAG_PARAM = FlowIncrementalParamDefinition(
 )
 
 
+class FlowIncrementalOptions(NldBaseModel):
+    """Base model of the flow-level ``incremental.options`` block.
+
+    Each incremental type accepting options subclasses it. Unknown keys
+    are rejected so a typo in a flow YAML fails at load time instead of
+    being silently ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    def check_flow_coherence(self, data_flow_definition: Any) -> list[str]:
+        """Return the incoherences between these options and the flow.
+
+        The default accepts every flow. Types override it to check, for
+        example, that a configured column exists on the target structure.
+        """
+        return []
+
+
 class FlowIncrementalDefinition(NldBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -95,7 +114,36 @@ class FlowIncrementalDefinition(NldBaseModel):
     # When False, every run recomputes the processing state and the
     # planned-state CLI commands report that plans are not supported.
     supports_planned_state: bool = False
+    # Write strategies a flow of this type may use; None accepts every
+    # strategy. Checked at flow load and before every SQL flow write.
+    allowed_write_strategies: list[str] | None = None
+    # When True, each run owns a scope of the target (e.g. a set of
+    # periods): a SQL flow skips its write when the run selects nothing,
+    # and hands the scope condition to the scoped write strategies.
+    target_scoped: bool = False
     param_definitions: list[FlowIncrementalParamDefinition]
+    # Model validating the flow-level ``incremental.options`` block. None
+    # means the type accepts no options at all.
+    options_model: type[FlowIncrementalOptions] | None = None
+
+    def validate_options(
+        self,
+        options: dict[str, Any] | None,
+    ) -> FlowIncrementalOptions | None:
+        """Validate the flow-level options against the options model.
+
+        Raises:
+            ValueError: if options are given to a type accepting none, or
+                if they do not match the options model.
+        """
+        if self.options_model is None:
+            if options:
+                raise ValueError(
+                    f"Incremental type '{self.category}' accepts no options, "
+                    f"got: {', '.join(sorted(options))}"
+                )
+            return None
+        return self.options_model.model_validate(options or {})
 
     def create_incremental_parameters(self, **kwargs: Any) -> dict[str, Any]:
         """
@@ -172,15 +220,22 @@ class FlowIncrementalLogic[FLOW_INCREMENTAL_PARAMS: "FlowIncrementalParams"](
     parameter_class: type[FlowIncrementalParams]
 
     def create_incremental_params_from_dict(
-        self, **kwargs: Any
+        self,
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> FLOW_INCREMENTAL_PARAMS:
+        """Build the incremental parameters from runtime values and options.
+
+        The flow-level options are validated and handed to the parameter
+        class only for types declaring an options model, since their
+        strategy resolution may depend on them.
+        """
         incremental_parameters_dict = self.definition.create_incremental_parameters(
             **kwargs
         )
+        validated_options = self.definition.validate_options(options=options)
+        if validated_options is not None:
+            incremental_parameters_dict["options"] = validated_options
         return self.parameter_class(  # type: ignore[return-value]
-            **(
-                incremental_parameters_dict
-                if incremental_parameters_dict is not None
-                else {}
-            )
+            **incremental_parameters_dict,
         )

@@ -358,6 +358,12 @@ class IncrementalStateManagerFactory(NldMixIn):
         )
 
         incremental_parameters = incremental_logic.create_incremental_params_from_dict(
+            options=(
+                data_flow_definition.incremental.options
+                if data_flow_definition is not None
+                and data_flow_definition.incremental is not None
+                else None
+            ),
             **kwargs,
         )
 

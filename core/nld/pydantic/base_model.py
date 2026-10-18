@@ -15,7 +15,17 @@ import yaml
 
 from nld.exceptions import BaseModelDeepCopyException
 from nld.logging import BaseEvent, EventLevel, NldLogger
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel, PrivateAttr, ValidationInfo
+
+SOURCE_FILE_PATH_CONTEXT_KEY = "source_file_path"
+
+
+def get_source_file_path(info: ValidationInfo) -> str | None:
+    """Return the file being loaded when the loader passed it as context."""
+    if not isinstance(info.context, dict):
+        return None
+    source_file_path = info.context.get(SOURCE_FILE_PATH_CONTEXT_KEY)
+    return str(source_file_path) if source_file_path is not None else None
 
 
 class NldBaseModel(BaseModel):
@@ -105,12 +115,19 @@ class NldBaseModel(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_dict(cls, from_dict: dict[str, Any]) -> Self:
+    def from_dict(
+        cls,
+        from_dict: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> Self:
         """
         Read model instance from dictionary.
 
         Args:
             from_dict: Dictionary with model data
+            context: Validation context handed to every nested validator,
+                e.g. the source file path the YAML loaders store under
+                the ``SOURCE_FILE_PATH_CONTEXT_KEY`` key
 
         Returns:
             Instance of the model populated with data from the dictionary
@@ -119,7 +136,10 @@ class NldBaseModel(BaseModel):
             >>> data_dict = {"name": "test", "value": 42}
             >>> config = MyConfig.from_dict(data_dict)
         """
-        return cls.model_validate(from_dict)
+        return cls.model_validate(
+            from_dict,
+            context=context,
+        )
 
     def to_dict(
         self,

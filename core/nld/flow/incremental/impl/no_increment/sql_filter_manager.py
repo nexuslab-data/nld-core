@@ -10,6 +10,7 @@ class NoIncrementSqlFilterManager(IncrementalSqlFilterManager):
         sql_query: str,
         predecessors: dict[str, DataFlowStructurePredecessor],
         dialect: str,
+        input_database_names: dict[str, str] | None = None,
     ) -> str:
         """No filtering for no-increment strategy."""
         return sql_query

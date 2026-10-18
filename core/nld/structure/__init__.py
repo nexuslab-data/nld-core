@@ -56,6 +56,7 @@ from .structure import (
     StructureGenerationMetadata,
     StructureNamespace,
     StructureTemplate,
+    resolve_structure_characterisation_alias,
 )
 from .structure_model import (
     NamespacedStructureModel,
@@ -122,4 +123,5 @@ __all__ = [
     "build_json_schema",
     "build_pydantic_model",
     "resolve_field_characterisation_definitions",
+    "resolve_structure_characterisation_alias",
 ]

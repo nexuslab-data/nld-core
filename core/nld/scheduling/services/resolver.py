@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 
 from nld.flow.definition import DataFlowDefinition, NamespacedDataFlowDefinition
-from nld.pydantic import NldEntityReference
+from nld.pydantic import NldEntityReference, NldNamespace
 from nld.scheduling.models import (
     FlowTask,
     FlowTrigger,
@@ -27,6 +27,10 @@ class SchedulingResolver:
     preconditions, upstream tasks are derived from the flow dependency graph
     (a task is upstream when the flow it schedules produces a structure that
     is a predecessor of this task's flow).
+
+    Tasks may share a name across namespaces, like the flows they schedule.
+    A bare ``flow`` or predecessor reference (``load_customer``) is therefore
+    looked up in the declaring task's own namespace first, then project-wide.
     """
 
     def __init__(self, environment: str, registry: "NldEntityRegistry") -> None:
@@ -34,25 +38,32 @@ class SchedulingResolver:
         self._registry = registry
         self._flow_by_id: dict[str, NamespacedDataFlowDefinition] = {}
         self._structure_to_flow_id: dict[str, str] = {}
+        self._task_by_id: dict[str, NamespacedFlowTaskModel] = {}
 
     def resolve(self) -> SchedulingGraph:
         """Build the environment's SchedulingGraph."""
         self._build_flow_indexes()
+        flow_tasks = self._registry.get_flow_task_dict().values()
+        self._task_by_id = {task.id: task for task in flow_tasks}
 
         graph = SchedulingGraph()
-        # node_id -> (task model, scheduled flow id)
-        active_nodes: dict[str, tuple[FlowTask, str]] = {}
+        # node_id -> (namespaced task, scheduled flow id)
+        active_nodes: dict[str, tuple[NamespacedFlowTaskModel, str]] = {}
         # scheduled flow id -> task node id (for derivation)
         flow_id_to_node: dict[str, str] = {}
 
-        for task in self._registry.get_flow_task_dict().values():
+        for task in flow_tasks:
             model = task.model
             if not model.is_active_in(self._environment):
                 continue
             env_scheduling = model.for_environment(self._environment)
             if env_scheduling is None or env_scheduling.trigger is None:
                 continue
-            flow_id = self._resolve_flow_reference(model.flow).id
+            flow_id = self._resolve_flow_reference(
+                model.flow,
+                task_id=task.id,
+                task_namespace=task.namespace,
+            ).id
             trigger = env_scheduling.trigger
             cron = trigger.cron if isinstance(trigger, ScheduleTrigger) else None
             graph.add_task(
@@ -64,7 +75,7 @@ class SchedulingResolver:
                 params=model.merged_params(self._environment),
                 frequency=model.resolved_frequency(self._environment),
             )
-            active_nodes[task.id] = (model, flow_id)
+            active_nodes[task.id] = (task, flow_id)
             flow_id_to_node[flow_id] = task.id
 
         self._add_trigger_edges(
@@ -77,7 +88,7 @@ class SchedulingResolver:
     def _add_trigger_edges(
         self,
         graph: SchedulingGraph,
-        active_nodes: dict[str, tuple[FlowTask, str]],
+        active_nodes: dict[str, tuple[NamespacedFlowTaskModel, str]],
         flow_id_to_node: dict[str, str],
     ) -> None:
         """Add precondition edges between active tasks.
@@ -86,8 +97,8 @@ class SchedulingResolver:
         resolved against the local registry, but are surfaced as external
         source nodes with a dotted edge so the dependency stays visible.
         """
-        for node_id, (model, flow_id) in active_nodes.items():
-            env_scheduling = model.for_environment(self._environment)
+        for node_id, (task, flow_id) in active_nodes.items():
+            env_scheduling = task.model.for_environment(self._environment)
             trigger = env_scheduling.trigger if env_scheduling else None
             if not isinstance(trigger, FlowTrigger):
                 continue
@@ -98,16 +109,18 @@ class SchedulingResolver:
                 node_id=node_id,
                 flow_id=flow_id,
                 trigger=trigger,
+                task_namespace=task.namespace,
             )
 
     def _add_adjusted_lineage_edges(
         self,
         graph: SchedulingGraph,
-        active_nodes: dict[str, tuple[FlowTask, str]],
+        active_nodes: dict[str, tuple[NamespacedFlowTaskModel, str]],
         flow_id_to_node: dict[str, str],
         node_id: str,
         flow_id: str,
         trigger: FlowTrigger,
+        task_namespace: NldNamespace,
     ) -> None:
         """Add edges from explicit predecessors, or from the automatic lineage.
 
@@ -139,7 +152,11 @@ class SchedulingResolver:
                     downstream_node_id=node_id,
                 )
                 continue
-            addition_id = self._resolve_task_reference(addition.name).id
+            addition_id = self._resolve_task_reference(
+                addition.name,
+                task_id=node_id,
+                task_namespace=task_namespace,
+            ).id
             if not is_override and addition_id in derived_ids:
                 raise NldSchedulingPredecessorError(
                     f"Task '{node_id}' declares '{addition_id}' in "
@@ -216,11 +233,47 @@ class SchedulingResolver:
             if target_structure is not None:
                 self._structure_to_flow_id[str(target_structure)] = namespaced_flow.id
 
+    @staticmethod
+    def _build_task_local_id(
+        reference: str,
+        task_namespace: NldNamespace,
+    ) -> str | None:
+        """Return the id a bare reference designates in its task's namespace.
+
+        Only a bare reference is read relative to the declaring task, since
+        a qualified (``sales.load_customer``) or root-anchored reference
+        (``.load_customer``) names its namespace already. A root task needs
+        no local id, as the project-wide lookup starts at the root.
+
+        Example:
+            >>> SchedulingResolver._build_task_local_id(
+            ...     "load_customer",
+            ...     task_namespace=NldNamespace("sales"),
+            ... )
+            'sales.load_customer'
+        """
+        if "." in reference or task_namespace.is_root:
+            return None
+        return f"{task_namespace}.{reference}"
+
     def _resolve_flow_reference(
         self,
         reference: NldEntityReference[DataFlowDefinition],
+        task_id: str,
+        task_namespace: NldNamespace,
     ) -> NamespacedDataFlowDefinition:
-        """Resolve a flow entity reference to its NamespacedDataFlowDefinition."""
+        """Resolve a task's flow reference, the task's namespace first.
+
+        Without this, a bare ``flow: load_customer`` declared in ``sales``
+        would bind to a root ``load_customer`` flow, or be rejected as
+        ambiguous, although ``sales`` holds a flow of that name.
+        """
+        local_id = self._build_task_local_id(
+            reference,
+            task_namespace=task_namespace,
+        )
+        if local_id is not None and local_id in self._flow_by_id:
+            return self._flow_by_id[local_id]
         try:
             return self._registry.get_data_flow_definition(
                 entity_key=reference.entity_name,
@@ -228,14 +281,22 @@ class SchedulingResolver:
             )
         except (ValueError, RuntimeError) as error:
             raise NldSchedulingReferenceError(
-                f"Task references unknown flow '{reference}': {error}"
+                f"Task '{task_id}' cannot resolve its flow '{reference}': {error}"
             ) from error
 
     def _resolve_task_reference(
         self,
         reference: NldEntityReference[FlowTask],
+        task_id: str,
+        task_namespace: NldNamespace,
     ) -> NamespacedFlowTaskModel:
-        """Resolve a task entity reference to its namespaced wrapper."""
+        """Resolve a predecessor task reference, the task's namespace first."""
+        local_id = self._build_task_local_id(
+            reference,
+            task_namespace=task_namespace,
+        )
+        if local_id is not None and local_id in self._task_by_id:
+            return self._task_by_id[local_id]
         try:
             return self._registry.get_flow_task(
                 entity_key=reference.entity_name,
@@ -243,5 +304,6 @@ class SchedulingResolver:
             )
         except (ValueError, RuntimeError) as error:
             raise NldSchedulingReferenceError(
-                f"Precondition references unknown task '{reference}': {error}"
+                f"Task '{task_id}' cannot resolve its predecessor "
+                f"'{reference}': {error}"
             ) from error

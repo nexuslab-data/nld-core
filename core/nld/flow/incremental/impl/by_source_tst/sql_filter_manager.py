@@ -32,6 +32,7 @@ class BySourceTstSqlFilterManager(IncrementalSqlFilterManager):
         sql_query: str,
         predecessors: dict[str, DataFlowStructurePredecessor],
         dialect: str,
+        input_database_names: dict[str, str] | None = None,
     ) -> str:
         """Apply timestamp-based incremental filtering to a SQL query."""
         masters = resolve_master_predecessors(predecessors)
@@ -43,7 +44,7 @@ class BySourceTstSqlFilterManager(IncrementalSqlFilterManager):
             dialect=dialect,
         )
 
-        for _, master_predecessor in masters:
+        for predecessor_name, master_predecessor in masters:
             master_structure = master_predecessor.full_path.resolve(
                 entity_type="structure",
             )
@@ -59,6 +60,7 @@ class BySourceTstSqlFilterManager(IncrementalSqlFilterManager):
             table_node = find_table_reference(
                 parsed,
                 table_name=master_structure.name,
+                database_name=(input_database_names or {}).get(predecessor_name),
             )
             if table_node is None:
                 raise ValueError(

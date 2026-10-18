@@ -51,12 +51,64 @@ def get_query_statement_type(
 def find_table_reference(
     parsed: exp.Expression,
     table_name: str,
+    database_name: str | None = None,
 ) -> exp.Table | None:
-    """Find a table node in the parsed query matching the given name."""
+    """Find a table node in the parsed query matching the given name.
+
+    When ``database_name`` is given, a node qualified with a database
+    must name that one: ``DB_A.RAW.ORDERS`` is not a read of ``ORDERS``
+    from ``DB_B``. A node without database still matches by name.
+    """
     for table_node in parsed.find_all(exp.Table):
-        if table_node.name.lower() == table_name.lower():
+        if _is_table_read(
+            database_name=database_name,
+            table_name=table_name,
+            table_node=table_node,
+        ):
             return table_node
     return None
+
+
+def find_table_references(
+    parsed: exp.Expression,
+    table_name: str,
+    database_name: str | None = None,
+) -> list[exp.Table]:
+    """Find every table node reading ``table_name``, CTE references excluded.
+
+    A query may read the same table several times (UNION branches,
+    self-joins, subqueries). A table reference without schema whose name
+    is the name of a CTE of the query reads the CTE, not the table, so it
+    is left out. For example in ``WITH orders AS (SELECT * FROM s.orders)
+    SELECT * FROM orders`` only ``s.orders`` is returned.
+
+    When ``database_name`` is given, a node qualified with another
+    database is left out as well, as in ``find_table_reference``.
+    """
+    cte_names = {cte.alias_or_name.lower() for cte in parsed.find_all(exp.CTE)}
+    return [
+        table_node
+        for table_node in parsed.find_all(exp.Table)
+        if _is_table_read(
+            database_name=database_name,
+            table_name=table_name,
+            table_node=table_node,
+        )
+        and (table_node.db or table_node.name.lower() not in cte_names)
+    ]
+
+
+def _is_table_read(
+    database_name: str | None,
+    table_name: str,
+    table_node: exp.Table,
+) -> bool:
+    """Whether the node reads the table, in the database when it names one."""
+    if table_node.name.lower() != table_name.lower():
+        return False
+    if database_name is None or not table_node.catalog:
+        return True
+    return table_node.catalog.lower() == database_name.lower()
 
 
 def get_table_alias_or_name(table_node: exp.Table) -> str:

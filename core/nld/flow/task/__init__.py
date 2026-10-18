@@ -10,6 +10,7 @@ from .data_flow_state_task import (
     FlowStateExecutionGetStateTask,
     FlowStateExecutionGetStepsTask,
     FlowStateIncrementalComputeTask,
+    FlowStateIncrementalExcludeKeysTask,
     FlowStateIncrementalGetPlannedTask,
     FlowStateIncrementalGetStateTask,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "FlowStateExecutionGetStateTask",
     "FlowStateExecutionGetStepsTask",
     "FlowStateIncrementalComputeTask",
+    "FlowStateIncrementalExcludeKeysTask",
     "FlowStateIncrementalGetPlannedTask",
     "FlowStateIncrementalGetStateTask",
 ]

@@ -8,7 +8,11 @@ from nld.logging import (
     StandardTestEvent,
     log_event_default,
 )
-from nld.pydantic import NldBaseModel, NldNamedBaseModel
+from nld.pydantic import (
+    SOURCE_FILE_PATH_CONTEXT_KEY,
+    NldBaseModel,
+    NldNamedBaseModel,
+)
 from nld.utils import file_util
 from nld.utils.file_util import load_file_into_dict
 from nld.utils.jinja_utils import JINJA2_FILE_STANDARD_REGEX
@@ -123,6 +127,7 @@ def read_entities_from_local_directory(
             )
             definition = resolved_type.from_dict(
                 from_dict=entity_dict,
+                context={SOURCE_FILE_PATH_CONTEXT_KEY: file_path},
             )
 
             if is_named:
@@ -239,6 +244,7 @@ def read_entities_from_yaml_file_list(
             )
             definition = resolved_type.from_dict(
                 from_dict=entity_dict,
+                context={SOURCE_FILE_PATH_CONTEXT_KEY: file_path},
             )
 
             if is_named:

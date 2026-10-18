@@ -384,9 +384,7 @@ class TargetStructureGenerator(NldMixIn):
             source=inputs.predecessor_reference,
         ).to_dict()
         structure_type = (
-            "VIEW"
-            if (inputs.write_strategy or "").upper() == FlowUpdateStrategies.VIEW
-            else "TABLE"
+            "VIEW" if inputs.write_strategy == FlowUpdateStrategies.VIEW else "TABLE"
         )
 
         if existing_content is None:

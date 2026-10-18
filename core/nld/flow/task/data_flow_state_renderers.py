@@ -21,6 +21,7 @@ from nld.flow.incremental.models import (
     FlowProcessingState,
     FlowState,
     FlowStatePlan,
+    IncrementalStateStatus,
 )
 from nld.utils.user_display import (
     format_aligned_table,
@@ -325,3 +326,28 @@ def render_planned_processing_states_text(
         )
     table_lines = format_aligned_table(headers=headers, rows=rows)
     return "\n" + "\n".join(table_lines) + "\n\n"
+
+
+def render_excluded_keys_text(previous_statuses: dict[str, str | None]) -> str:
+    """Render the keys ``exclude-keys`` set to PERMANENTLY_EXCLUDED.
+
+    A key the state did not hold shows ``not in state`` as its previous
+    status, so a mistyped key stands out among the excluded ones.
+    """
+    excluded_count = sum(
+        1
+        for status in previous_statuses.values()
+        if status != IncrementalStateStatus.PERMANENTLY_EXCLUDED
+    )
+    rows = [
+        [name, status or "not in state"] for name, status in previous_statuses.items()
+    ]
+    table_lines = format_aligned_table(
+        headers=["key", "previous_status"],
+        rows=rows,
+    )
+    summary = (
+        f"Keys set to {IncrementalStateStatus.PERMANENTLY_EXCLUDED}: "
+        f"{excluded_count} of {len(previous_statuses)}"
+    )
+    return "\n" + summary + "\n\n" + "\n".join(table_lines) + "\n\n"

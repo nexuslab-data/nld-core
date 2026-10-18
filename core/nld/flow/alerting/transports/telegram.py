@@ -36,7 +36,7 @@ def build_telegram_text(alert: FlowAlert) -> str:
     environment = alert.environment or "-"
     lines = [
         f"{emoji} <b>{alert.level.value}</b> [{escape_html_entities(environment)}] "
-        f"<code>{escape_html_entities(alert.flow_path)}</code>",
+        f"<code>{escape_html_entities(alert.subject)}</code>",
         escape_html_entities(alert.summary),
     ]
     if alert.items:

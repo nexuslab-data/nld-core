@@ -1,11 +1,20 @@
+import sys
 from typing import Any, ClassVar
 
 import click
 
+from nld.flow.alerting import FlowAlertItem, FlowAlertLevel, FlowExecutionOutcome
 from nld.flow.deploy.flow_change_set import FlowChangeSet
-from nld.flow.deploy.flow_deploy_executor import FlowDeployExecutor, FlowDeployResult
+from nld.flow.deploy.flow_deploy_executor import (
+    FLOW_DEPLOY_COMMAND,
+    FlowDeployExecutor,
+    FlowDeployResult,
+)
 from nld.flow.deploy.flow_deploy_planner import FlowDeployPlanner
+from nld.flow.exceptions import FlowDeployFailedException
+from nld.flow.utils import FlowExecStatus
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
+from nld.pydantic import NldNamespace
 from nld.task.base import StandardTask
 
 
@@ -22,6 +31,11 @@ class FlowDeployTask(StandardTask):
     planner and the executor. Each underlying task remains responsible
     for one thing: ``FlowDeployPlanner`` computes change sets,
     ``FlowDeployExecutor`` applies them.
+
+    A deploy that leaves any structure or flow failed raises
+    ``FlowDeployFailedException`` once the run is recorded, so the
+    command exits non-zero; every failed deploy is alerted through the
+    project's alerting transports (see ``report_deploy_failure``).
     """
 
     init_params: ClassVar[list[str | ExecutionParameterDefinition]] = [
@@ -105,7 +119,21 @@ class FlowDeployTask(StandardTask):
         callers (CI gates, the CLI's changes-pending exit code) can
         consume it structurally instead of scraping log lines.
         """
-        planner = FlowDeployPlanner(
+        if self._preview:
+            change_set = self._build_planner().run()
+            self._print_change_set(change_set=change_set)
+            self._write_change_set_output(change_set=change_set)
+            return change_set
+
+        try:
+            return self._deploy()
+        except Exception as ex:
+            self.report_deploy_failure(error=ex)
+            raise
+
+    def _build_planner(self) -> FlowDeployPlanner:
+        """Build the planner computing the change set of this deploy."""
+        return FlowDeployPlanner(
             adopt=self._adopt,
             allow_drift=self._allow_drift,
             downstream=self._downstream,
@@ -114,12 +142,17 @@ class FlowDeployTask(StandardTask):
             rebuild=self._rebuild,
             upstream=self._upstream,
         )
-        change_set = planner.run()
 
-        if self._preview:
-            self._print_change_set(change_set=change_set)
-            self._write_change_set_output(change_set=change_set)
-            return change_set
+    def _deploy(self) -> list[FlowDeployResult]:
+        """Plan and apply the change set, raising when any part failed.
+
+        The executor records a run with failures as partial or failed
+        and returns normally, so that every independent change still
+        lands; the command itself must then fail, or a scheduler reads
+        a half-applied release as a successful one.
+        """
+        planner = self._build_planner()
+        change_set = planner.run()
 
         if change_set.is_empty():
             self.log_info("No changes detected — nothing to deploy")
@@ -139,7 +172,90 @@ class FlowDeployTask(StandardTask):
             deploy_target_factory=planner.deploy_target_factory,
             rebuild=self._rebuild,
         )
-        return [executor.run()]
+        result = executor.run()
+        if result.has_failures:
+            raise FlowDeployFailedException(
+                deployment_id=result.deployment_id,
+                failed_flows=result.failed,
+                failed_structures=result.structures_failed,
+                status=result.status,
+            )
+        return [result]
+
+    def report_deploy_failure(self, error: Exception) -> None:
+        """Alert on a failed deploy and print the outcome line. Never raises.
+
+        A deploy runs unattended in a scheduler pod, where an error only
+        written to the pod log goes unread and a release goes out half
+        applied. The alerting in force is the deployed namespace's, the
+        root's for a whole-project deploy. Losing the alert must not hide
+        the deploy error itself, so a problem here is only logged.
+        """
+        try:
+            self._report_deploy_failure(error=error)
+        except Exception as ex:
+            self.log_warn(f"Deploy failure could not be reported: {ex}")
+
+    def _report_deploy_failure(self, error: Exception) -> None:
+        service = self.execution_context.alerting_provider.for_flow(
+            flow_namespace=self._namespace or NldNamespace.ROOT_VALUE,
+        )
+        deploy_failure = error if isinstance(error, FlowDeployFailedException) else None
+        alerted = False
+        if service.should_alert(FlowAlertLevel.FAILED):
+            alerted = service.notify(
+                service.build_command_alert(
+                    command=self._describe_command(),
+                    error=error,
+                    items=self._build_failure_items(deploy_failure=deploy_failure),
+                    run_id=(
+                        deploy_failure.deployment_id
+                        if deploy_failure is not None
+                        else self.execution_context.exec_info.uuid
+                    ),
+                    summary=(
+                        deploy_failure.headline if deploy_failure is not None else None
+                    ),
+                ),
+            )
+        outcome_line = service.build_outcome_line(
+            FlowExecutionOutcome(
+                alert_level=FlowAlertLevel.FAILED,
+                alerted=alerted,
+                execution_status=FlowExecStatus.FAILED,
+            ),
+        )
+        if outcome_line is not None:
+            sys.stdout.write(outcome_line + "\n")
+            sys.stdout.flush()
+
+    def _describe_command(self) -> str:
+        """The deploy command line, scoped as it was requested."""
+        command = FLOW_DEPLOY_COMMAND
+        if self._namespace is not None:
+            command += f" --namespace {self._namespace}"
+        if self._name is not None:
+            command += f" --name {self._name}"
+        return command
+
+    @staticmethod
+    def _build_failure_items(
+        deploy_failure: FlowDeployFailedException | None,
+    ) -> list[FlowAlertItem]:
+        """One alert line per structure and flow that failed to deploy."""
+        if deploy_failure is None:
+            return []
+        return [
+            FlowAlertItem(
+                detail=detail,
+                label=f"{kind} {name}",
+            )
+            for kind, failures in (
+                ("structure", deploy_failure.failed_structures),
+                ("flow", deploy_failure.failed_flows),
+            )
+            for name, detail in failures.items()
+        ]
 
     def _write_change_set_output(
         self,

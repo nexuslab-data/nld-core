@@ -203,7 +203,11 @@ class NldNamedBaseModel(NldBaseModel):
         return cls.from_dict(from_dict=data)
 
     @classmethod
-    def from_dict(cls, from_dict: dict[str, Any]) -> Self:
+    def from_dict(
+        cls,
+        from_dict: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> Self:
         """
         Read model instance from dictionary.
 
@@ -212,6 +216,9 @@ class NldNamedBaseModel(NldBaseModel):
 
         Args:
             from_dict: Dictionary with model data
+            context: Validation context handed to every nested validator,
+                e.g. the source file path the YAML loaders store under
+                the ``SOURCE_FILE_PATH_CONTEXT_KEY`` key
 
         Returns:
             Instance of the model populated with data from the dictionary
@@ -234,7 +241,10 @@ class NldNamedBaseModel(NldBaseModel):
             ResolutionContext._context.errors = []
             raise ValueError(error_msg)
 
-        instance = cls.model_validate(resolved_data)
+        instance = cls.model_validate(
+            resolved_data,
+            context=context,
+        )
         if reference_info:
             instance._resolved_references = reference_info
         return instance

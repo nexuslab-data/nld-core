@@ -104,6 +104,27 @@ class FlowDeployResult:
     def structures_skipped_count(self) -> int:
         return len(self.structures_skipped)
 
+    @property
+    def has_failures(self) -> bool:
+        """Whether any flow or structure of the run failed to deploy."""
+        return self.failed_count + self.structures_failed_count > 0
+
+    @property
+    def status(self) -> str:
+        """The run status recorded on the deployment row.
+
+        Structure failures count: a run that silently dropped or
+        failed a structure must not report success even when every
+        flow entry recorded cleanly.
+        """
+        failed = self.failed_count + self.structures_failed_count
+        succeeded = self.succeeded_count + self.structures_succeeded_count
+        if failed > 0 and succeeded > 0:
+            return "partial"
+        if failed > 0:
+            return "failed"
+        return "success"
+
 
 @dataclasses.dataclass
 class _StructureRoundState:
@@ -1180,19 +1201,8 @@ class FlowDeployExecutor(StandardTask):
         self,
         result: FlowDeployResult,
     ) -> str:
-        """Compute the overall deployment status from results.
-
-        Structure failures count: a run that silently dropped or
-        failed a structure must not report success even when every
-        flow entry recorded cleanly.
-        """
-        failed = result.failed_count + result.structures_failed_count
-        succeeded = result.succeeded_count + result.structures_succeeded_count
-        if failed > 0 and succeeded > 0:
-            return "partial"
-        if failed > 0:
-            return "failed"
-        return "success"
+        """Compute the overall deployment status from results."""
+        return result.status
 
     def _get_dependent_flow_keys(
         self,

@@ -1,8 +1,11 @@
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 
-from nld.pydantic import NldNamedBaseModel
+from nld.pydantic import NldNamedBaseModel, get_source_file_path
+from nld.structure.structure.structure_characterisation_def import (
+    resolve_structure_characterisation_alias,
+)
 
 
 class StructureCharacterisation(NldNamedBaseModel):
@@ -26,9 +29,26 @@ class StructureCharacterisation(NldNamedBaseModel):
 
     @field_validator("characterisation", mode="before")
     @classmethod
-    def normalize_characterisation(cls, value: str) -> str:
-        """Normalizes characterisation type to lowercase."""
-        return value.lower() if value else value
+    def normalize_characterisation(
+        cls,
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        """Normalizes characterisation type to lowercase, resolving aliases.
+
+        A deprecated ``functional_*`` type is replaced by its ``business_*``
+        name here, so no code past the parser ever sees the old name.
+        """
+        if not value:
+            return value
+        location = f"'{info.data.get('name')}'"
+        source_file_path = get_source_file_path(info)
+        if source_file_path is not None:
+            location = f"{location} ({source_file_path})"
+        return resolve_structure_characterisation_alias(
+            value.lower(),
+            location=location,
+        )
 
     def has_attributes(self) -> bool:
         return self.attributes is not None and len(self.attributes) > 0

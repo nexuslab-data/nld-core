@@ -5,7 +5,7 @@ from nld.utils import NldStrEnum
 
 class FlowUpdateStrategies(NldStrEnum):
     DEL_INS = "DELETE_INSERT"
-    DELETE = "DELETE"
+    DEL_INS_SCOPED = "DELETE_INSERT_SCOPED"
     INSERT = "INSERT"
     OVERWRITE = "OVERWRITE"
     UPSERT = "UPSERT"
@@ -15,10 +15,21 @@ class FlowUpdateStrategies(NldStrEnum):
 
 FLOW_UPDATE_STRATEGY_LITERAL = Literal[
     "DELETE_INSERT",
-    "DELETE",
+    "DELETE_INSERT_SCOPED",
     "INSERT",
     "OVERWRITE",
     "UPSERT",
     "UPSERT_LOGICAL_DELETE",
     "VIEW",
+]
+
+
+class OverwriteModes(NldStrEnum):
+    REPLACE = "replace"
+    TRUNCATE_INSERT = "truncate_insert"
+
+
+OVERWRITE_MODE_LITERAL = Literal[
+    "replace",
+    "truncate_insert",
 ]

@@ -156,6 +156,36 @@ class FlowAlertingService(NldMixIn):
             summary=summary[:MAX_ERROR_SUMMARY_LENGTH],
         )
 
+    def build_command_alert(
+        self,
+        command: str,
+        error: BaseException,
+        run_id: str,
+        items: Sequence[FlowAlertItem] = (),
+        summary: str | None = None,
+    ) -> FlowAlert:
+        """Assemble the FAILED alert of a flow command that is not one execution.
+
+        Example: ``flow deploy`` applies many flows and structures at once,
+        so its alert names the command line and lists each failed one as an
+        item, with ``run_id`` the deployment a reader looks up. ``summary``
+        replaces the error's own text when the items already detail it.
+        """
+        if summary is None:
+            summary = str(error) or error.__class__.__name__
+        return FlowAlert(
+            command=command,
+            environment=self._environment,
+            execution_reference=self._settings.execution_reference,
+            execution_url=self._settings.execution_url,
+            execution_status=FlowExecStatus.FAILED,
+            flow_uid=run_id,
+            items=list(items),
+            level=FlowAlertLevel.FAILED,
+            project_name=self._project_name,
+            summary=summary[:MAX_ERROR_SUMMARY_LENGTH],
+        )
+
     @staticmethod
     def _quality_item(result: "DataQualityCheckResult") -> FlowAlertItem:
         label = (

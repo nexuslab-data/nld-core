@@ -1,6 +1,7 @@
 """Click subcommand group ``nld flow state``.
 
-Read-only commands that emit persisted flow state. The default stdout
+Commands that emit persisted flow state. Only ``compute --persist`` and
+``exclude-keys`` write to the state backend. The default stdout
 rendering is a concise human-friendly summary; ``--format json`` emits
 the full machine-readable payload. ``--output`` always writes JSON to a
 file. Reads always go to the primary state backend.
@@ -23,6 +24,8 @@ Layout::
                                                  [--persist] [--requestor U]
                                                  [--source-request-authorized]
                                                  [--format text|json] [--output]
+    nld flow state incremental exclude-keys <name> --keys K1,K2 [--namespace]
+                                                 [--format text|json] [--output]
 """
 
 from typing import Any
@@ -35,6 +38,7 @@ from nld.flow.task import (
     FlowStateExecutionGetStateTask,
     FlowStateExecutionGetStepsTask,
     FlowStateIncrementalComputeTask,
+    FlowStateIncrementalExcludeKeysTask,
     FlowStateIncrementalGetPlannedTask,
     FlowStateIncrementalGetStateTask,
 )
@@ -63,7 +67,11 @@ def state_execution(ctx: click.Context, /, **kwargs: Any) -> None:
 @state.group(name="incremental", no_args_is_help=True)
 @click.pass_context
 def state_incremental(ctx: click.Context, /, **kwargs: Any) -> None:
-    """Read-only access to a flow's incremental state."""
+    """Access to a flow's incremental state.
+
+    The get-* subcommands only read it; compute --persist saves a plan and
+    exclude-keys updates the key state of a by_key flow.
+    """
 
 
 @requires_wrapper.nld_command(
@@ -186,3 +194,29 @@ def flow_state_incremental_compute(ctx: click.Context, **kwargs: Any) -> Any:
             ),
         },
     )
+
+
+@requires_wrapper.nld_command(
+    group=state_incremental,
+    command_name="exclude-keys",
+    logger_formatter=StandardNldFormatter(),
+    with_project=True,
+)
+@params.nld_root_folder_path
+@params_flow.flow_name
+@params_flow.flow_namespace
+@params.profile_name
+@params_flow.state_exclude_keys
+@params_flow.state_file_output_params
+def flow_state_incremental_exclude_keys(ctx: click.Context, **kwargs: Any) -> Any:
+    """Set keys of a by_key flow to PERMANENTLY_EXCLUDED.
+
+    DELTA and BACKFILL_DELTA runs never select an excluded key again. Use it
+    for a key the flow code cannot classify, e.g. a source answer it cannot
+    tell permanent. A key absent from the key state is added. Run it while
+    the flow is not running: a run already started may overwrite the change.
+
+    A BACKFILL of the keys (--keys without --with-delta) or a FULL run
+    re-attempts them, which undoes the exclusion.
+    """
+    return execute_task(FlowStateIncrementalExcludeKeysTask)

@@ -37,6 +37,7 @@ from .deploy_capabilities import (
     ANSI_COMPARABLE_DATA_TYPE_ALIASES,
     ConnectorDeployCapabilities,
     normalize_comparable_data_type,
+    normalize_comparable_type_size,
 )
 from .exceptions import (
     NonSelectQueryException,
@@ -58,7 +59,7 @@ from .query_exec_result_formatter import (
     QueryExecResultDisplayMode,
     QueryExecResultFormatter,
 )
-from .sql import resolve_sqlglot_dialect
+from .sql import resolve_sqlglot_dialect, supports_cross_database_read
 from .structure_reader import ConnectorStructureReader, SQLConnectorStructureReader
 
 __all__ = [
@@ -98,10 +99,12 @@ __all__ = [
     "QueryOutputType",
     "QueryWrapper",
     "normalize_comparable_data_type",
+    "normalize_comparable_type_size",
     "resolve_sqlglot_dialect",
     "SQLConnectorStructureReader",
     "SQLDataConnector",
     "SQLOperationType",
+    "supports_cross_database_read",
     "TomlConnectionConfigSource",
     "UnavailableConnectionConfigException",
     "UnavailableConnectionProfileException",

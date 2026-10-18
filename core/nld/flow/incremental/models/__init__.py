@@ -4,6 +4,7 @@ from .logic import (
     WITH_DELTA_FLAG_PARAM,
     FlowIncrementalDefinition,
     FlowIncrementalLogic,
+    FlowIncrementalOptions,
     FlowIncrementalParamDefinition,
     FlowIncrementalParams,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "FULL_FLAG_PARAM",
     "FlowIncrementalDefinition",
     "FlowIncrementalLogic",
+    "FlowIncrementalOptions",
     "FlowIncrementalParamDefinition",
     "FlowIncrementalParams",
     "FlowIncrementalPeriodRangeType",

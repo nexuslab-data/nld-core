@@ -1,3 +1,5 @@
+from sqlglot import exp
+
 from nld.utils.sqlglot.base_dml import BaseSqlglotDMLBuilder
 from nld.utils.sqlglot.utils import quote_identifier, quote_table
 
@@ -51,3 +53,25 @@ class BigQuerySqlglotDMLBuilder(BaseSqlglotDMLBuilder):
             f"WHERE {join_conditions}"
             f")"
         )
+
+    def build_delete_where_query(
+        self,
+        table_path: str,
+        condition: exp.Expression,
+    ) -> str:
+        """Build the DELETE with backtick-quoted table and column identifiers.
+
+        Matches the connector's systematic BigQuery quoting, as done for
+        the logical-delete UPDATE above.
+        """
+        schema_name, _, table_name = table_path.rpartition(".")
+        table_ref = quote_table(
+            schema=schema_name,
+            table=table_name,
+            dialect=self._dialect,
+        )
+        rendered_condition = condition.sql(
+            dialect=self._dialect,
+            identify=True,
+        )
+        return f"DELETE FROM {table_ref} WHERE {rendered_condition}"

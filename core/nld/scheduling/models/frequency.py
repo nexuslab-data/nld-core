@@ -29,6 +29,16 @@ class ExecutionFrequency(NldStrEnum):
         """Rank ascending from the most frequent cadence, None when cadence-less."""
         return _CADENCE_RANKS.get(self)
 
+    @property
+    def expected_interval_seconds(self) -> int | None:
+        """Longest gap two consecutive deliveries should show, None when cadence-less.
+
+        This is the yardstick any "is this asset late?" comparison uses, so it
+        lives here rather than in each report: a continuous asset is expected
+        to deliver within the hour, a monthly one within 31 days.
+        """
+        return _EXPECTED_INTERVAL_SECONDS.get(self)
+
     def is_more_frequent_than(self, other: "ExecutionFrequency") -> bool:
         """Whether this cadence delivers more often than another one.
 
@@ -51,6 +61,18 @@ _CADENCE_RANKS: dict[ExecutionFrequency, int] = {
     ExecutionFrequency.MONTHLY: 5,
     ExecutionFrequency.QUARTERLY: 6,
     ExecutionFrequency.YEARLY: 7,
+}
+
+
+_EXPECTED_INTERVAL_SECONDS: dict[ExecutionFrequency, int] = {
+    ExecutionFrequency.CONTINUOUS: 3600,
+    ExecutionFrequency.HOURLY: 3600,
+    ExecutionFrequency.INTRADAY: 6 * 3600,
+    ExecutionFrequency.DAILY: 24 * 3600,
+    ExecutionFrequency.WEEKLY: 7 * 24 * 3600,
+    ExecutionFrequency.MONTHLY: 31 * 24 * 3600,
+    ExecutionFrequency.QUARTERLY: 92 * 24 * 3600,
+    ExecutionFrequency.YEARLY: 366 * 24 * 3600,
 }
 
 

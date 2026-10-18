@@ -92,21 +92,21 @@ class NldBaseModelManager(ABC):
         schema_name: str,
         table_name: str,
         table_exists: str = "skip",
-        use_functional_key_as_primary: bool = False,
+        use_business_key_as_primary: bool = False,
         exclude_fields: set[str] | None = None,
         track_timestamps: bool = False,
     ) -> None:
         """Create a table based on Pydantic model structure.
 
         Handles timestamp column injection, primary key resolution
-        (including functional key override), table creation via the
-        connector, and optional functional key index creation.
+        (including business key override), table creation via the
+        connector, and optional business key index creation.
 
         Subclasses can override ``_TIMESTAMP_COLUMN_TYPE`` and
         ``_TIMESTAMP_DEFAULT`` for dialect-specific defaults and
-        ``_create_functional_key_index`` to create indexes after the
+        ``_create_business_key_index`` to create indexes after the
         table is created. A table that already existed is left as is: its
-        functional key index is not created.
+        business key index is not created.
         """
         from nld.structure import StructureCharacterisationDefinitionNames
 
@@ -120,12 +120,12 @@ class NldBaseModelManager(ABC):
 
         table_path = f"{schema_name}.{table_name}"
         override_primary_key_fields = None
-        if use_functional_key_as_primary:
-            functional_key = structure.get_characterisation(
-                StructureCharacterisationDefinitionNames.FUNCTIONAL_KEY
+        if use_business_key_as_primary:
+            business_key = structure.get_characterisation(
+                StructureCharacterisationDefinitionNames.BUSINESS_KEY
             )
-            if functional_key:
-                override_primary_key_fields = functional_key.linked_fields
+            if business_key:
+                override_primary_key_fields = business_key.linked_fields
 
         create_result = self.connector.create_table(
             table_path,
@@ -140,21 +140,21 @@ class NldBaseModelManager(ABC):
         if create_result is None:
             return
 
-        self._create_functional_key_index(
+        self._create_business_key_index(
             structure=structure,
             table_name=table_name,
             table_path=table_path,
-            use_functional_key_as_primary=use_functional_key_as_primary,
+            use_business_key_as_primary=use_business_key_as_primary,
         )
 
-    def _create_functional_key_index(  # noqa: B027
+    def _create_business_key_index(  # noqa: B027
         self,
         structure: Structure,
         table_name: str,
         table_path: str,
-        use_functional_key_as_primary: bool,
+        use_business_key_as_primary: bool,
     ) -> None:
-        """Hook for creating functional key indexes after table creation.
+        """Hook for creating business key indexes after table creation.
 
         Override in subclasses whose connector supports index creation.
         The default implementation is a no-op.

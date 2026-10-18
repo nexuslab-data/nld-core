@@ -36,7 +36,7 @@ class ByKeyStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name", "key_name"],
                 "name": "fk_by_key_state",
             }
@@ -54,12 +54,14 @@ class ByKeyStateRow(NldBaseModel):
     first_processed_at: datetime.datetime | None = None
     source_deleted_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
     @field_validator(
         "last_successfully_processed_at",
         "last_processed_at",
         "first_processed_at",
         "source_deleted_at",
+        "source_last_updated_at",
         mode="before",
     )
     @classmethod
@@ -76,7 +78,7 @@ class ByKeyProcessingStateRow(NldBaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "functional_key": {
+            "business_key": {
                 "fields": ["flow_namespace", "flow_name", "key_name"],
                 "name": "fk_by_key_processing_state",
             }
@@ -92,9 +94,11 @@ class ByKeyProcessingStateRow(NldBaseModel):
     process_error_message: str | None = None
     processing_completed_at: datetime.datetime | None = None
     parameters: dict[str, Any] | None = None
+    source_last_updated_at: datetime.datetime | None = None
 
     @field_validator(
         "processing_completed_at",
+        "source_last_updated_at",
         mode="before",
     )
     @classmethod
@@ -157,7 +161,7 @@ class BigQueryByKeyStateBackendManager(
             table_name=BIGQUERY_BY_KEY_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=True,
+            use_business_key_as_primary=True,
         )
 
         self.pydantic_manager.create_table(
@@ -166,7 +170,7 @@ class BigQueryByKeyStateBackendManager(
             table_name=BIGQUERY_BY_KEY_PROCESSING_STATE_TABLE_NAME,
             table_exists="skip",
             track_timestamps=True,
-            use_functional_key_as_primary=False,
+            use_business_key_as_primary=False,
         )
 
     def read_current_state(self) -> ByKeyState:
@@ -202,6 +206,7 @@ class BigQueryByKeyStateBackendManager(
                 first_processed_at=row.first_processed_at,
                 source_deleted_at=row.source_deleted_at,
                 parameters=row.parameters,
+                source_last_updated_at=row.source_last_updated_at,
             )
 
         return ByKeyState(keys=keys)
@@ -224,6 +229,7 @@ class BigQueryByKeyStateBackendManager(
                 process_error_message=key_state.process_error_message,
                 processing_completed_at=key_state.processing_completed_at,
                 parameters=key_state.parameters,
+                source_last_updated_at=key_state.source_last_updated_at,
             )
 
             self.pydantic_manager.upsert_model(
@@ -254,6 +260,7 @@ class BigQueryByKeyStateBackendManager(
             process_error_message=key_state.process_error_message,
             processing_completed_at=key_state.processing_completed_at,
             parameters=key_state.parameters,
+            source_last_updated_at=key_state.source_last_updated_at,
         )
 
         self.pydantic_manager.upsert_model(
@@ -284,6 +291,7 @@ class BigQueryByKeyStateBackendManager(
                 first_processed_at=key_state.first_processed_at,
                 source_deleted_at=key_state.source_deleted_at,
                 parameters=key_state.parameters,
+                source_last_updated_at=key_state.source_last_updated_at,
             )
 
             self.pydantic_manager.upsert_model(
@@ -316,6 +324,7 @@ class BigQueryByKeyStateBackendManager(
             first_processed_at=key_state.first_processed_at,
             source_deleted_at=key_state.source_deleted_at,
             parameters=key_state.parameters,
+            source_last_updated_at=key_state.source_last_updated_at,
         )
 
         self.pydantic_manager.upsert_model(

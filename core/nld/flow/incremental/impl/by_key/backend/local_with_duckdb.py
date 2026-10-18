@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -6,6 +5,9 @@ from typing import Any, Literal
 from nld.connector.duckdb import DuckDBEngine
 from nld.connector.local import LocalFileSystemConnector
 from nld.flow.backend.local import LocalBackendMixin
+from nld.flow.incremental.impl.by_key.backend.base_with_duckdb import (
+    ByKeyDuckDBKeyStateMixin,
+)
 from nld.flow.incremental.impl.by_key.backend.base_with_pydantic import (
     ByKeyStateBackendManager,
 )
@@ -15,11 +17,7 @@ from nld.flow.incremental.impl.by_key.constants import (
 )
 from nld.flow.incremental.impl.by_key.state import (
     ByKeyProcessingState,
-    ByKeySingleKeyState,
     ByKeyState,
-)
-from nld.flow.incremental.models import (
-    IncrementalStateStatus,
 )
 from nld.flow.incremental.models.events import (
     IncrementalBackendEngineInitialized,
@@ -34,13 +32,15 @@ FileFormat = Literal["parquet"]
 
 class LocalByKeyDuckDBStateBackendManager(
     LocalBackendMixin,
+    ByKeyDuckDBKeyStateMixin,
     ByKeyStateBackendManager[LocalFileSystemConnector],
 ):
     """
     BY_KEY State Backend Manager for local filesystem using DuckDB engine.
 
     DuckDB provides optimized SQL queries on Parquet files without loading
-    the entire dataset into memory.
+    the entire dataset into memory. A run merges the keys it processed into
+    the key state file (see ``ByKeyDuckDBKeyStateMixin``).
 
     Note: This backend only supports parquet format. Using JSON will raise an error.
     """
@@ -127,6 +127,23 @@ class LocalByKeyDuckDBStateBackendManager(
             )
         )
 
+    @property
+    def key_state_file_path(self) -> Path:
+        """The key state file, written in place."""
+        return self.general_state_file_path
+
+    def prepare_current_state(self) -> None:
+        """Nothing to prepare: the key state file is already local."""
+
+    def _current_key_state_file_path(self) -> Path | None:
+        """Return the key state file, or None before the first run."""
+        if os.path.isfile(self.general_state_file_path):
+            return self.general_state_file_path
+        return None
+
+    def _publish_key_state_file(self) -> None:
+        """Nothing to publish: the merge wrote the key state file in place."""
+
     def read_current_state(self) -> ByKeyState:
         """Retrieve the current state using DuckDB to read Parquet."""
         file_path = str(self.general_state_file_path)
@@ -135,36 +152,6 @@ class LocalByKeyDuckDBStateBackendManager(
             return self._read_parquet_with_duckdb(self.general_state_file_path)
 
         return ByKeyState(keys={})
-
-    def _read_parquet_with_duckdb(self, file_path: Path) -> ByKeyState:
-        """Read Parquet file using DuckDB and convert to ByKeyState."""
-        result, columns = self.duckdb_engine.read_parquet_with_columns(file_path)
-
-        keys: dict[str, ByKeySingleKeyState] = {}
-        for row in result:
-            row_dict = dict(zip(columns, row, strict=False))
-            name = row_dict["name"]
-            parameters_str = row_dict.get("parameters")
-            parameters = json.loads(parameters_str) if parameters_str else None
-
-            keys[name] = ByKeySingleKeyState(
-                name=name,
-                status=row_dict.get("status") or IncrementalStateStatus.NOT_PROCESSED,
-                last_successfully_processed_at=row_dict.get(
-                    "last_successfully_processed_at"
-                ),
-                last_processed_at=row_dict.get("last_processed_at"),
-                last_process_status=(
-                    row_dict.get("last_process_status")
-                    or IncrementalStateStatus.NOT_PROCESSED
-                ),
-                last_process_error_message=row_dict.get("last_process_error_message"),
-                first_processed_at=row_dict.get("first_processed_at"),
-                source_deleted_at=row_dict.get("source_deleted_at"),
-                parameters=parameters,
-            )
-
-        return ByKeyState(keys=keys)
 
     def write_processing_state(
         self,
@@ -179,41 +166,6 @@ class LocalByKeyDuckDBStateBackendManager(
     ) -> None:
         """Write post-processing state using DuckDB to write Parquet."""
         self._write_parquet_with_duckdb(post_processing_flow_state)
-
-    def _write_parquet_with_duckdb(self, state: ByKeyState) -> None:
-        """Write ByKeyState to Parquet file using DuckDB."""
-        import pandas as pd
-
-        records = [
-            {
-                "name": ks.name,
-                "status": ks.status,
-                "last_successfully_processed_at": (ks.last_successfully_processed_at),
-                "last_processed_at": ks.last_processed_at,
-                "last_process_status": ks.last_process_status,
-                "last_process_error_message": ks.last_process_error_message,
-                "first_processed_at": ks.first_processed_at,
-                "source_deleted_at": ks.source_deleted_at,
-                "parameters": json.dumps(ks.parameters) if ks.parameters else None,
-            }
-            for ks in state.keys.values()
-        ]
-
-        if records:
-            df = pd.DataFrame(records)
-            os.makedirs(self.general_state_file_path.parent, exist_ok=True)
-            self.duckdb_engine.write_dataframe_to_parquet(
-                df, self.general_state_file_path, "state_data"
-            )
-        else:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-
-            from nld.flow.incremental.impl.by_key.schema import get_by_key_state_schema
-
-            os.makedirs(self.general_state_file_path.parent, exist_ok=True)
-            empty_table = pa.Table.from_pylist([], schema=get_by_key_state_schema())
-            pq.write_table(empty_table, self.general_state_file_path)
 
     def get_state_summary(self) -> dict[str, int]:
         """Get summary statistics via DuckDB SQL query (no full load)."""

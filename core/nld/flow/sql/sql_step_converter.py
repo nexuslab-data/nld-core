@@ -9,8 +9,11 @@ from nld.connector.base.query import (
 from nld.flow.execution.execution_info import FlowStepExecutionInfo
 from nld.flow.utils import FlowStepExecStatus
 
+# A CREATE TABLE only carries a row count when it loads a query result
+# (CREATE OR REPLACE TABLE ... AS), so its rows are inserted rows.
 _OPERATION_TO_TARGET_ENTRY_FIELD: dict[SQLOperationType, str] = {
     SQLOperationType.COPY: "target_entries_inserted_in_success",
+    SQLOperationType.CREATE_TABLE: "target_entries_inserted_in_success",
     SQLOperationType.DELETE: "target_entries_deleted_in_success",
     SQLOperationType.INSERT: "target_entries_inserted_in_success",
     SQLOperationType.MERGE: "target_entries_inserted_in_success",

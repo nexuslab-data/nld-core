@@ -3,6 +3,7 @@ from .logic import (
     BY_KEY_FLOW_INCREMENTAL_LOGIC,
     BY_KEY_INCREMENTAL_DEFINITION,
     ByKeyFlowIncrementalParams,
+    ByKeyOptions,
 )
 from .manager import ByKeyStateManager
 from .sql_filter_manager import ByKeySqlFilterManager
@@ -21,6 +22,7 @@ __all__ = [
     "BY_KEY_FLOW_INCREMENTAL_LOGIC",
     "BY_KEY_INCREMENTAL_DEFINITION",
     "ByKeyFlowIncrementalParams",
+    "ByKeyOptions",
     "ByKeyPlannedProcessingDetailedState",
     "ByKeyPlannedProcessingState",
     "ByKeyProcessingState",

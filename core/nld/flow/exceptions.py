@@ -78,3 +78,31 @@ class StalePlannedStateException(NldRuntimeException):
             f"option forbids recomputing it."
         )
         super().__init__(self.message)
+
+
+class FlowDeployFailedException(NldRuntimeException):
+    CODE = 42005
+    MESSAGE = "Flow Deploy Failed Exception"
+
+    def __init__(
+        self,
+        deployment_id: str,
+        failed_flows: dict[str, str],
+        failed_structures: dict[str, str],
+        status: str,
+    ) -> None:
+        self.deployment_id = deployment_id
+        self.failed_flows = dict(failed_flows)
+        self.failed_structures = dict(failed_structures)
+        self.status = status
+        self.headline = (
+            f"Flow deploy ended '{status}' — "
+            f"{len(failed_structures)} structure(s) and "
+            f"{len(failed_flows)} flow(s) failed"
+        )
+        failures = "; ".join(
+            f"{name}: {error}"
+            for name, error in {**failed_structures, **failed_flows}.items()
+        )
+        self.message = f"{self.headline}: {failures}"
+        super().__init__(self.message)

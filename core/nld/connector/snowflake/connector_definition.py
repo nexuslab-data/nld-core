@@ -52,6 +52,21 @@ class SnowflakeConnectorDefinition(ConnectorDefinition):
         "STRING": "VARCHAR",
         "TEXT": "VARCHAR",
     }
+    # INFORMATION_SCHEMA reports the applied size of a bare declaration
+    # (VARCHAR reads back as 16777216 characters, INTEGER as NUMBER(38,0)),
+    # so a bare and a sized spelling of one column must compare equal.
+    # CHAR is listed apart from its VARCHAR alias: it defaults to 1.
+    default_data_type_sizes: dict[str, tuple[int, int]] = {
+        "CHAR": (1, 0),
+        "CHARACTER": (1, 0),
+        "NCHAR": (1, 0),
+        "NUMERIC": (38, 0),
+        "TIME": (9, 0),
+        "TIMESTAMP_LTZ": (9, 0),
+        "TIMESTAMP_NTZ": (9, 0),
+        "TIMESTAMP_TZ": (9, 0),
+        "VARCHAR": (16777216, 0),
+    }
     name: str = "snowflake"
 
 

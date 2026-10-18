@@ -31,6 +31,9 @@ class SeedFlowTask(DataFlowTask):
 
     CSV column names are validated against the target structure fields
     before any rows are written.
+
+    Seed flows always reload the whole CSV file, so an ``incremental``
+    config other than ``no_increment`` is rejected at initialisation.
     """
 
     _INCREMENTAL_LOGIC: ClassVar[FlowIncrementalLogic[Any]] = (
@@ -55,12 +58,14 @@ class SeedFlowTask(DataFlowTask):
         super().__init__(**kwargs)
         self.namespaced_data_flow_definition: NamespacedDataFlowDefinition
         self.data_flow_definition: DataFlowDefinition
+        self._assert_no_incremental()
         self.target_connector = target_connector
         self.target_schema = self._resolve_target_schema(target_schema)
 
     def run_flow(self) -> None:
         """Execute the seed flow using the configured write strategy."""
         self.target_connector.assert_connection_is_opened()
+        self._assert_no_overwrite_replace()
 
         write_strategy_name = self.data_flow_definition.write_strategy or "OVERWRITE"
         write_strategy = get_seed_write_strategy(
@@ -104,6 +109,37 @@ class SeedFlowTask(DataFlowTask):
             f"Seed flow completed successfully for table: {table_path}, "
             f"{len(query_results)} queries executed"
         )
+
+    def _assert_no_incremental(self) -> None:
+        """Reject delta incremental types, seed flows reload the whole file.
+
+        The base task resolves the incremental logic from the flow config
+        first, so without this check a seed flow would track a delta state
+        while still loading every row of its CSV file.
+        """
+        incremental_config = self.incremental_config
+        no_increment_type = self._INCREMENTAL_LOGIC.definition.category
+        if (
+            incremental_config is not None
+            and incremental_config.type != no_increment_type
+        ):
+            raise ValueError(
+                f"Incremental type '{incremental_config.type}' is not supported "
+                f"by seed flows (flow '{self.data_flow_definition.name}'); seed "
+                f"flows always reload the whole CSV file, remove 'incremental' "
+                f"or set it to '{no_increment_type}'"
+            )
+
+    def _assert_no_overwrite_replace(self) -> None:
+        """Reject the replace OVERWRITE mode, which only SQL flows implement."""
+        options = self.data_flow_definition.write_strategy_options
+        if options is not None and options.is_overwrite_replace():
+            raise ValueError(
+                f"'write_strategy_options.overwrite_mode: replace' is not "
+                f"supported by seed flows (flow "
+                f"'{self.data_flow_definition.name}'); seed flows always "
+                f"overwrite with TRUNCATE + INSERT"
+            )
 
     def get_data_quality_context(self) -> DataQualityContext | None:
         """Build the quality context from the resolved seed target."""

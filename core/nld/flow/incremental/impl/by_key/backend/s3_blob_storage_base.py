@@ -1,14 +1,12 @@
 import abc
 import json
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from nld.connector.s3_blob_storage import S3ObjectStorageConnector
-from nld.flow.backend.utils import BackendStandardFolderNames
 from nld.flow.incremental.backend.s3_blob_storage import S3IncrementalBackendMixin
 from nld.flow.incremental.impl.by_key.backend.base_with_pydantic import (
     ByKeyStateBackendManager,
@@ -24,7 +22,6 @@ from nld.flow.incremental.impl.by_key.state import (
     ByKeySingleKeyProcessingState,
     ByKeyState,
 )
-from nld.utils.datetime_util import COMPACT_DATETIME_FORMAT
 
 S3_BY_KEY_PLANNED_PROCESSING_STATE_BASE_NAME = "by_key_planned_processing_state"
 S3_BY_KEY_PLANNED_PROCESSING_STATE_FILE_NAME = (
@@ -140,48 +137,10 @@ class S3ByKeyBackendStateManagerBase(
         return ByKeyProcessingState.read_json_file(local_path)
 
     def _latest_processing_state_remote_path(self) -> str | None:
-        """Return the newest ``{s3_root}/<timestamp>/state/processed.<fmt>``.
-
-        Lists the run folders directly under ``s3_root`` (one non-recursive
-        listing, so the runs' large ``data/`` folders are not walked), keeps
-        those whose name parses as a run timestamp, and returns the processing
-        file in the greatest one — or ``None`` when none has been written.
-        """
-        run_folders = sorted(
-            folder
-            for folder in self._list_run_folder_names()
-            if self._is_run_folder(folder)
+        """Return the newest ``{s3_root}/<timestamp>/state/processed.<fmt>``."""
+        return self._latest_run_state_file_remote_path(
+            file_name=self.processed_state_file_name,
         )
-        for folder in reversed(run_folders):
-            remote_path = (
-                f"{self.s3_root_path}/{folder}"
-                f"/{BackendStandardFolderNames.STATE}/{self.processed_state_file_name}"
-            )
-            if self.backend_connector.check_if_file_exists(
-                obj_storage_path=remote_path,
-            ):
-                return remote_path
-        return None
-
-    def _list_run_folder_names(self) -> list[str]:
-        """List the immediate child folder names directly under ``s3_root``."""
-        root = self.s3_root_path.rstrip("/")
-        blobs = self.backend_connector._get_blobs_list(prefix=f"{root}/")
-        names: list[str] = []
-        for blob in blobs:
-            name = blob[len(root) :].strip("/").split("/")[0]
-            if name:
-                names.append(name)
-        return names
-
-    @staticmethod
-    def _is_run_folder(folder_name: str) -> bool:
-        """Whether ``folder_name`` is a compact run timestamp, not a stray folder."""
-        try:
-            datetime.strptime(folder_name, COMPACT_DATETIME_FORMAT)
-        except ValueError:
-            return False
-        return True
 
     def read_post_processing_state(self) -> ByKeyState | None:
         """Read the current persisted post-processing state, or None if absent.
@@ -279,6 +238,7 @@ class S3ByKeyBackendStateManagerBase(
                 "parameters": (
                     json.dumps(key_state.parameters) if key_state.parameters else None
                 ),
+                "source_last_updated_at": key_state.source_last_updated_at,
             }
             for key_state in state.keys.values()
         ]
@@ -310,6 +270,7 @@ class S3ByKeyBackendStateManagerBase(
                 process_error_message=record.get("process_error_message"),
                 processing_completed_at=record.get("processing_completed_at"),
                 parameters=parameters,
+                source_last_updated_at=record.get("source_last_updated_at"),
             )
         return ByKeyProcessingState(
             flow_uid=flow_uid,
@@ -336,6 +297,7 @@ class S3ByKeyBackendStateManagerBase(
                 "parameters": (
                     json.dumps(key_detail.parameters) if key_detail.parameters else None
                 ),
+                "source_last_updated_at": key_detail.source_last_updated_at,
             }
             for key_detail in detail.keys.values()
         ]
@@ -365,6 +327,7 @@ class S3ByKeyBackendStateManagerBase(
                 name=record["name"],
                 planned_processing_status=record["planned_processing_status"],
                 parameters=parameters,
+                source_last_updated_at=record.get("source_last_updated_at"),
             )
         return ByKeyPlannedProcessingDetailedState(
             plan_state_uid=plan_state_uid,

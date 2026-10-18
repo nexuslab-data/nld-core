@@ -36,6 +36,10 @@ class FlowTask(NldNamedBaseModel):
     (data_sub_product, process_type, runner hints, pod overrides, ...) lives
     under ``params`` so the core model never changes to carry a new attribute.
 
+    Tasks may share a name across namespaces, like the flows they schedule.
+    A bare ``flow`` reference is therefore resolved in the task's own
+    namespace first, then project-wide, where an ambiguous name is an error.
+
     ``frequency`` is the intended execution cadence of the scheduled asset. It
     is first-class metadata rather than something read back from the trigger,
     because a flow-triggered asset has no cron to read and a cron says when a

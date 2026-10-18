@@ -13,6 +13,7 @@ from .structure_characterisation import (
 from .structure_characterisation_def import (
     StructureCharacterisationDefinition,
     StructureCharacterisationDefinitionNames,
+    resolve_structure_characterisation_alias,
 )
 from .structure_definition import StructureDefinition
 from .structure_generation_metadata import StructureGenerationMetadata
@@ -38,4 +39,5 @@ __all__ = [
     "StructureGenerationMetadata",
     "StructureNamespace",
     "StructureTemplate",
+    "resolve_structure_characterisation_alias",
 ]

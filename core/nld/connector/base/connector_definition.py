@@ -15,12 +15,15 @@ class ConnectorDefinition(NldBaseModel):
     structure definition may declare (empty means not restricted).
     ``comparable_data_type_aliases`` carries the engine's own type
     spellings mapped to their canonical comparable form.
+    ``default_data_type_sizes`` maps a type to the ``(length,
+    precision)`` the engine applies to a bare declaration of it.
     ``fixed_precision_data_types`` lists the types whose precision is
     fixed by the engine and never reported by the readers.
     """
 
     accepted_data_types: list[str] = []
     comparable_data_type_aliases: dict[str, str] = {}
+    default_data_type_sizes: dict[str, tuple[int, int]] = {}
     fixed_precision_data_types: list[str] = []
     name: str
 

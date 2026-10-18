@@ -48,6 +48,7 @@ from nld.flow.graph.data_flow_graph import (
 )
 from nld.flow.graph.scoped_data_flow_graph import ScopedDataFlowGraph
 from nld.flow.structure_generation import TargetStructureGenerator
+from nld.flow.utils import FlowUpdateStrategies
 from nld.parameters.execution_params_def import ExecutionParameterDefinition
 from nld.pydantic import NldEntityLayout, NldNamespace, build_entity_key
 from nld.service import EntityTypeNames
@@ -974,7 +975,7 @@ class FlowDeployPlanner(StandardTask):
         flows_by_view_name: dict[str, list[str]] = {}
         for namespaced_flow in all_flows.values():
             flow_def = namespaced_flow.model
-            if flow_def.write_strategy != "VIEW":
+            if flow_def.write_strategy != FlowUpdateStrategies.VIEW:
                 continue
             if flow_def.target_structure is None:
                 continue
